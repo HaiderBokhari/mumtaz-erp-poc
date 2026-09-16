@@ -1,7 +1,7 @@
 import datetime
 
 from django.db.models import DecimalField, F, Sum, Value
-from django.db.models.functions import Coalesce, TruncDate
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -67,8 +67,7 @@ class DashboardView(APIView):
             order_date__gte=thirty_days_ago, order_date__lte=today, status=SalesOrder.STATUS_CONFIRMED
         )
         sales_trend = (
-            trend_rows.annotate(day=TruncDate('order_date'))
-            .values('day')
+            trend_rows.values(day=F('order_date'))
             .annotate(value=_money_sum(F('lines__quantity') * F('lines__unit_price')))
             .order_by('day')
         )

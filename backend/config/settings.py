@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'django_filters',
 
     # Mumtaz & Co ERP apps
+    'core',
     'accounts',
     'catalog',
     'warehouses',

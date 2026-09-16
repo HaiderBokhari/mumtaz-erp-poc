@@ -362,16 +362,20 @@ class Command(BaseCommand):
                 sku_choices = random.sample(skus, k=min(3, len(skus)))
                 so_number = f'SO-2026-{so_counter:05d}'
                 so_counter += 1
-                so = SalesOrder.objects.create(
+                so, created = SalesOrder.objects.get_or_create(
                     so_number=so_number,
-                    ptc_reference_number=f'PTC-SALE-{so_counter:06d}',
-                    shop=shop, channel=shop.channel, warehouse=warehouses['SGD-HQ'],
-                    dr=dr, order_date=order_date,
-                    timestamp=timezone.make_aware(
-                        datetime.combine(order_date, datetime.min.time()) + timedelta(hours=10)
-                    ),
-                    created_by=dr,
+                    defaults={
+                        'ptc_reference_number': f'PTC-SALE-{so_counter:06d}',
+                        'shop': shop, 'channel': shop.channel, 'warehouse': warehouses['SGD-HQ'],
+                        'dr': dr, 'order_date': order_date,
+                        'timestamp': timezone.make_aware(
+                            datetime.combine(order_date, datetime.min.time()) + timedelta(hours=10)
+                        ),
+                        'created_by': dr,
+                    },
                 )
+                if not created:
+                    continue
                 for sku in sku_choices:
                     price = ChannelPrice.current_price(shop.channel_id, sku.id, order_date) or sku.current_cost_price
                     SalesOrderLine.objects.create(
