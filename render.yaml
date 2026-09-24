@@ -1,0 +1,28 @@
+# Render Blueprint for a free-tier deploy of this app (single Docker image
+# serving the Django API + built React SPA together).
+# On render.com: New -> Blueprint -> pick this repo -> it reads this file.
+#
+# If you rename the service below (or Render picks a different subdomain
+# because "mumtaz-erp" is taken), update DJANGO_ALLOWED_HOSTS and
+# DJANGO_CSRF_TRUSTED_ORIGINS to match the actual *.onrender.com URL
+# Render assigns after the first deploy.
+services:
+  - type: web
+    name: mumtaz-erp
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: mumtaz-erp.onrender.com
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: https://mumtaz-erp.onrender.com
+      - key: DJANGO_SEED_DEMO_DATA
+        value: "True"
+      - key: DATABASE_URL
+        sync: false
