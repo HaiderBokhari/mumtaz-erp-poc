@@ -12,6 +12,13 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 interface DraftLine { sku: string; quantity: string; unit_cost: string }
+interface HistoryRow {
+  lines__sku__code: string
+  lines__sku__name: string
+  lines__sku__brand__name: string
+  total_quantity: string
+  total_value: string
+}
 
 export default function PurchaseOrdersPage() {
   const [orders, setOrders] = useState<PurchaseOrder[]>([])
@@ -24,6 +31,8 @@ export default function PurchaseOrdersPage() {
   const [lines, setLines] = useState<DraftLine[]>([{ sku: '', quantity: '', unit_cost: '' }])
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [history, setHistory] = useState<HistoryRow[]>([])
 
   async function loadOrders() {
     setLoading(true)
@@ -76,6 +85,14 @@ export default function PurchaseOrdersPage() {
     }
   }
 
+  async function toggleHistory() {
+    if (!showHistory) {
+      const res = await api.get<HistoryRow[]>('purchase-orders/history_by_sku/')
+      setHistory(res.data)
+    }
+    setShowHistory((s) => !s)
+  }
+
   async function runAction(po: PurchaseOrder, action: 'submit' | 'approve' | 'receive') {
     setBusyId(po.id)
     try {
@@ -95,10 +112,41 @@ export default function PurchaseOrdersPage() {
           <h1 className="text-xl font-semibold">Purchase Orders</h1>
           <p className="text-sm text-slate-500">Aligned with orders placed on PTC's SAP portal.</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
-          {showForm ? 'Cancel' : '+ New Purchase Order'}
-        </button>
+        <div className="no-print space-x-2">
+          <button className="btn-secondary" onClick={toggleHistory}>
+            {showHistory ? 'Hide history' : 'History by SKU'}
+          </button>
+          <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
+            {showForm ? 'Cancel' : '+ New Purchase Order'}
+          </button>
+        </div>
       </div>
+
+      {showHistory && (
+        <div className="card overflow-x-auto">
+          <div className="flex items-center justify-between p-4 pb-0">
+            <h2 className="font-medium">Purchase order history by SKU / brand</h2>
+            <button className="btn-secondary no-print" onClick={() => window.print()}>Print</button>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr><th>Brand</th><th>SKU</th><th className="text-right">Total quantity</th><th className="text-right">Total value</th></tr>
+            </thead>
+            <tbody>
+              {history.length === 0 ? (
+                <tr><td colSpan={4} className="text-center text-slate-400 py-6">No purchase history yet.</td></tr>
+              ) : history.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.lines__sku__brand__name}</td>
+                  <td>{row.lines__sku__code} &mdash; {row.lines__sku__name}</td>
+                  <td className="text-right">{row.total_quantity}</td>
+                  <td className="text-right">Rs {formatMoney(row.total_value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleCreate} className="card p-4 space-y-4">

@@ -9,6 +9,8 @@ const NAV_ITEMS = [
   { to: '/purchase-orders', label: 'Purchase Orders', icon: '🧾' },
   { to: '/shops', label: 'Shops', icon: '🏪' },
   { to: '/sales-orders', label: 'Sales Orders', icon: '🚚' },
+  { to: '/accounting', label: 'Accounting', icon: '💰' },
+  { to: '/hr', label: 'Human Resource', icon: '👥' },
 ]
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -22,7 +24,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen flex">
-      <aside className="w-64 bg-brand-900 text-white flex flex-col shrink-0">
+      <aside className="no-print w-64 bg-brand-900 text-white flex flex-col shrink-0">
         <div className="px-5 py-5 border-b border-white/10">
           <div className="text-lg font-semibold leading-tight">Mumtaz &amp; Co</div>
           <div className="text-xs text-white/60">Distribution ERP &middot; POC</div>
@@ -50,7 +52,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
+        <header className="no-print h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
           <div className="text-sm text-slate-500">Sargodha &middot; PTC Distribution</div>
           <div className="flex items-center gap-4">
             <div className="text-right">

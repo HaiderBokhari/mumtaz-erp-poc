@@ -28,12 +28,15 @@ export default function WarehousesPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Warehouses &amp; Stock</h1>
-        <p className="text-sm text-slate-500">Stock-on-hand report, filterable by warehouse, SKU or brand.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">Warehouses &amp; Stock</h1>
+          <p className="text-sm text-slate-500">Stock-on-hand report, filterable by warehouse, SKU or brand.</p>
+        </div>
+        <button className="btn-secondary no-print" onClick={() => window.print()}>Print</button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
         {warehouses.map((wh) => (
           <div key={wh.id} className="card p-4">
             <div className="font-medium">{wh.name}</div>
@@ -46,7 +49,7 @@ export default function WarehousesPage() {
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 no-print">
         <select className="input max-w-xs" value={warehouseFilter} onChange={(e) => setWarehouseFilter(e.target.value ? Number(e.target.value) : '')}>
           <option value="">All warehouses</option>
           {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}

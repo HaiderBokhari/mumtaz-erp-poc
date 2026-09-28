@@ -27,6 +27,9 @@ ROLE_MODEL_PERMISSIONS = {
         ('distribution', 'salesreturn'): 'all', ('distribution', 'paymentreceipt'): 'all',
         ('distribution', 'salestarget'): 'all',
         ('hr', 'employee'): 'all', ('hr', 'salarypayment'): 'all', ('hr', 'leaverequest'): 'all',
+        ('accounting', 'party'): 'all', ('accounting', 'voucher'): 'all',
+        ('accounting', 'chartofaccount'): 'view', ('accounting', 'accountgroup'): 'view',
+        ('accounting', 'journalentry'): 'view',
     },
     settings.ROLE_FSO: {
         ('catalog', 'brand'): 'view', ('catalog', 'sku'): 'view',
@@ -49,6 +52,8 @@ ROLE_MODEL_PERMISSIONS = {
         ('distribution', 'salesreturn'): 'all', ('distribution', 'paymentreceipt'): 'all',
         ('distribution', 'salestarget'): 'all',
         ('hr', 'employee'): 'view',
+        ('accounting', 'party'): 'view', ('accounting', 'voucher'): 'view',
+        ('accounting', 'journalentry'): 'view',
     },
     settings.ROLE_WAREHOUSE_STAFF: {
         ('catalog', 'brand'): 'view', ('catalog', 'sku'): 'view', ('catalog', 'channel'): 'view',

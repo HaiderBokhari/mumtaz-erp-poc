@@ -12,6 +12,9 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 npm-debug.log*
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # OS / editor
 .DS_Store

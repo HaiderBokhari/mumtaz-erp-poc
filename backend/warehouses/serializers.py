@@ -38,8 +38,8 @@ class StockLedgerEntrySerializer(serializers.ModelSerializer):
         model = StockLedgerEntry
         fields = [
             'id', 'warehouse', 'warehouse_name', 'sku', 'sku_code', 'entry_type',
-            'quantity_change', 'reference', 'notes', 'created_by', 'created_by_name',
-            'created_at',
+            'quantity_change', 'reference', 'notes', 'batch_number', 'expiry_date',
+            'created_by', 'created_by_name', 'created_at',
         ]
         read_only_fields = ['created_by']
 

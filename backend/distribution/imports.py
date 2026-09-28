@@ -15,9 +15,12 @@ answer #23: "Daily PTC sales files data is uploaded").
 """
 import csv
 import io
+from datetime import date as date_cls
+from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.utils import timezone
 
 from catalog.models import Channel, SKU
 from warehouses.models import Warehouse
@@ -127,14 +130,14 @@ def _create_order_for_group(group_rows, user):
     shop, _ = Shop.objects.get_or_create(name=shop_name, channel=channel)
 
     ptc_reference_number = str(first_row.get('ptc_reference_number') or '').strip()
-    order_date = str(first_row.get('order_date') or '').strip() or None
+    order_date = _parse_order_date(first_row.get('order_date'), first_line)
 
     so_number = f'SO-UPLOAD-{ptc_reference_number or SalesOrder.objects.count() + 1}-{first_line}'
     so = SalesOrder.objects.create(
         so_number=so_number,
         ptc_reference_number=ptc_reference_number,
         shop=shop, channel=channel, warehouse=warehouse, dr=dr_user,
-        order_date=order_date or None,
+        order_date=order_date or timezone.localdate(),
         source=SalesOrder.SOURCE_BIZOM_UPLOAD,
         created_by=user,
     )
@@ -144,10 +147,28 @@ def _create_order_for_group(group_rows, user):
         sku = SKU.objects.filter(code=sku_code).first()
         if not sku:
             raise ValueError(f'Row {line_no}: no SKU found with code "{sku_code}"')
-        SalesOrderLine.objects.create(
-            sales_order=so, sku=sku,
-            quantity=row.get('quantity') or 0,
-            unit_price=row.get('unit_price') or 0,
-        )
+        quantity = _parse_positive_decimal(row.get('quantity'), line_no, 'quantity')
+        unit_price = _parse_positive_decimal(row.get('unit_price'), line_no, 'unit_price', allow_zero=True)
+        SalesOrderLine.objects.create(sales_order=so, sku=sku, quantity=quantity, unit_price=unit_price)
 
     return so
+
+
+def _parse_positive_decimal(raw, line_no, field_name, allow_zero=False):
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, AttributeError):
+        raise ValueError(f'Row {line_no}: "{field_name}" must be a number, got "{raw}"')
+    if value < 0 or (value == 0 and not allow_zero):
+        raise ValueError(f'Row {line_no}: "{field_name}" must be a positive number, got "{raw}"')
+    return value
+
+
+def _parse_order_date(raw, line_no):
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    try:
+        return date_cls.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f'Row {line_no}: "order_date" must be YYYY-MM-DD, got "{raw}"')

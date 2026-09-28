@@ -143,6 +143,154 @@ export interface SalesOrder {
   total_value: string
 }
 
+export interface Party {
+  id: number
+  name: string
+  party_type: 'SUPPLIER' | 'RETAILER' | 'WHOLESALER'
+  contact_phone: string
+  address: string
+  credit_limit: string
+  is_active: boolean
+  balance: string
+  created_at: string
+}
+
+export interface ChartOfAccount {
+  id: number
+  code: string
+  name: string
+  account_type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'INCOME' | 'EXPENSE'
+  group: number | null
+  group_name: string
+  is_active: boolean
+  balance: string
+}
+
+export interface VoucherLine {
+  id?: number
+  account: number
+  account_code?: string
+  party?: number | null
+  party_name?: string
+  debit: string
+  credit: string
+}
+
+export interface Voucher {
+  id: number
+  voucher_number: string
+  voucher_type: 'PAYMENT' | 'JOURNAL' | 'EXPENSE'
+  date: string
+  narration: string
+  party: number | null
+  party_name: string
+  payment_mode: 'CASH' | 'BANK' | ''
+  amount: string | null
+  debit_account: number | null
+  debit_account_code: string
+  status: 'DRAFT' | 'POSTED'
+  journal_entry_id: number | null
+  lines: VoucherLine[]
+}
+
+export interface PartyLedgerRow {
+  date: string
+  narration: string
+  reference: string
+  account_code: string
+  debit: string
+  credit: string
+  balance: string
+}
+
+export interface PartyLedger {
+  party: Party
+  opening_balance: string
+  lines: PartyLedgerRow[]
+  closing_balance: string
+}
+
+export interface AgedRow {
+  party_id: number
+  party_name: string
+  balance: string
+  days_outstanding: number
+  bucket: '0-30' | '31-60' | '61-90' | '90+'
+}
+
+export interface IncomeStatement {
+  date_from: string
+  date_to: string
+  income: { code: string; name: string; amount: string }[]
+  expenses: { code: string; name: string; amount: string }[]
+  total_income: string
+  total_expenses: string
+  net_income: string
+}
+
+export interface BalanceSheet {
+  as_of: string
+  assets: { code: string; name: string; amount: string }[]
+  liabilities: { code: string; name: string; amount: string }[]
+  equity: { code: string; name: string; amount: string }[]
+  total_assets: string
+  total_liabilities: string
+  total_equity: string
+}
+
+export interface CashflowStatement {
+  date_from: string
+  date_to: string
+  opening_cash: string
+  total_inflows: string
+  total_outflows: string
+  closing_cash: string
+  by_source: { source: string; inflow: string; outflow: string }[]
+}
+
+export interface Employee {
+  id: number
+  employee_number: string
+  full_name: string
+  cnic: string
+  address: string
+  role: string
+  warehouse: number | null
+  warehouse_name: string
+  user: number | null
+  monthly_salary: string
+  commission_rate: string
+  hire_date: string
+  status: 'ACTIVE' | 'TERMINATED'
+  termination_date: string | null
+}
+
+export interface SalaryPayment {
+  id: number
+  employee: number
+  employee_name: string
+  employee_number: string
+  year: number
+  month: number
+  salary_paid: string
+  commission_amount: string
+  total_paid: string
+  paid_on: string
+}
+
+export interface LeaveRequest {
+  id: number
+  employee: number
+  employee_name: string
+  leave_type: 'CASUAL' | 'SICK' | 'ANNUAL' | 'UNPAID'
+  start_date: string
+  end_date: string
+  days: number
+  reason: string
+  status: 'PENDING' | 'APPROVED' | 'REJECTED'
+  requested_at: string
+}
+
 export interface DashboardData {
   stock_value: string
   todays_sales_value: string

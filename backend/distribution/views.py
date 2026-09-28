@@ -162,7 +162,8 @@ class PaymentReceiptViewSet(viewsets.ModelViewSet):
     filterset_fields = ['shop', 'method']
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        receipt = serializer.save(created_by=self.request.user)
+        receipt.post_to_ledger(user=self.request.user)
 
 
 class SalesTargetViewSet(viewsets.ModelViewSet):

@@ -41,3 +41,18 @@ table.data-table td {
 .badge {
   @apply inline-block rounded-full px-2 py-0.5 text-xs font-medium;
 }
+
+/* "View and print" reports (requirement doc): hide the app chrome and show
+   only the printable content when the browser's print dialog is used. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+  body {
+    background: white !important;
+  }
+}

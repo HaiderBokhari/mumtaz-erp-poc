@@ -1,6 +1,8 @@
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+from accounting.models import ChartOfAccount, JournalEntry
 
 
 class Employee(models.Model):
@@ -75,6 +77,22 @@ class SalaryPayment(models.Model):
     @property
     def total_paid(self):
         return self.salary_paid + self.commission_amount
+
+    @transaction.atomic
+    def post_to_ledger(self, user=None):
+        """Dr Salary Expense, Cr Cash (requirement doc, Accounts #3: embedded, not a manual voucher)."""
+        if self.total_paid <= 0:
+            return
+        JournalEntry.create_posted(
+            source=JournalEntry.SOURCE_VOUCHER,
+            lines=[
+                {'account': ChartOfAccount.SALARY_EXPENSE, 'debit': self.total_paid},
+                {'account': ChartOfAccount.CASH, 'credit': self.total_paid},
+            ],
+            date=self.paid_on,
+            narration=f'Salary {self.month}/{self.year}: {self.employee.full_name}',
+            reference=self.employee.employee_number, created_by=user,
+        )
 
 
 class LeaveRequest(models.Model):

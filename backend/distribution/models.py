@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 
+from accounting.models import ChartOfAccount, JournalEntry, Party
 from warehouses.models import StockLedgerEntry
 
 
@@ -29,6 +30,10 @@ class Shop(models.Model):
     )
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     closed_on = models.DateField(null=True, blank=True)
+    party = models.OneToOneField(
+        'accounting.Party', null=True, blank=True, on_delete=models.SET_NULL, related_name='shop',
+        help_text='Accounting party this shop posts its receivable ledger against (Accounts #5).',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -38,9 +43,28 @@ class Shop(models.Model):
     def __str__(self):
         return self.name
 
+    def get_or_create_party(self):
+        """Lazily create/link the accounting Party this shop's ledger entries post against."""
+        if self.party_id:
+            return self.party
+        party_type = Party.WHOLESALER if self.channel.channel_type in ('WS', 'VWS', 'MANDI') else Party.RETAILER
+        party = Party.objects.create(
+            name=self.name, party_type=party_type,
+            contact_phone=self.contact_phone, address=self.address, credit_limit=self.credit_limit,
+        )
+        self.party = party
+        self.save(update_fields=['party'])
+        return party
+
     @property
     def outstanding_balance(self):
-        """Sales invoiced minus payments received. A lightweight stand-in for a real party ledger."""
+        """
+        Real party-ledger balance once posted (Accounts #5). Falls back to
+        the old invoiced-minus-received estimate for a shop that hasn't
+        posted anything yet (e.g. freshly created, no party linked).
+        """
+        if self.party_id:
+            return self.party.balance
         invoiced = self.sales_orders.filter(status=SalesOrder.STATUS_CONFIRMED).aggregate(
             total=models.Sum(models.F('lines__quantity') * models.F('lines__unit_price'))
         )['total'] or Decimal('0')
@@ -100,9 +124,11 @@ class SalesOrder(models.Model):
 
     @transaction.atomic
     def confirm(self, user=None):
-        """Dispatch stock out of the source warehouse for every line."""
+        """Dispatch stock out of the source warehouse for every line, and post the accounting entry."""
         if self.status != self.STATUS_DRAFT:
             raise ValueError('Only a draft sales order can be confirmed.')
+        revenue_total = Decimal('0')
+        cost_total = Decimal('0')
         for line in self.lines.select_related('sku'):
             StockLedgerEntry.objects.create(
                 warehouse=self.warehouse, sku=line.sku,
@@ -110,8 +136,26 @@ class SalesOrder(models.Model):
                 quantity_change=-line.quantity,
                 reference=self.so_number, created_by=user,
             )
+            revenue_total += line.quantity * line.unit_price
+            cost_total += line.quantity * line.sku.current_cost_price
         self.status = self.STATUS_CONFIRMED
         self.save(update_fields=['status'])
+
+        if revenue_total > 0:
+            party = self.shop.get_or_create_party()
+            lines = [
+                {'account': ChartOfAccount.ACCOUNTS_RECEIVABLE, 'debit': revenue_total, 'party': party},
+                {'account': ChartOfAccount.SALES_REVENUE, 'credit': revenue_total},
+            ]
+            if cost_total > 0:
+                lines += [
+                    {'account': ChartOfAccount.COST_OF_GOODS_SOLD, 'debit': cost_total},
+                    {'account': ChartOfAccount.INVENTORY, 'credit': cost_total},
+                ]
+            JournalEntry.create_posted(
+                source=JournalEntry.SOURCE_SALE, lines=lines, date=self.order_date,
+                narration=f'Sale to {self.shop.name}', reference=self.so_number, created_by=user,
+            )
 
 
 class SalesOrderLine(models.Model):
@@ -153,6 +197,17 @@ class SalesReturn(models.Model):
     def __str__(self):
         return f'Return: {self.sku} x {self.quantity} from {self.shop}'
 
+    def _resolve_unit_price(self):
+        """Best-effort sale price for reversing revenue: the original SO line, else the current channel price, else cost."""
+        if self.sales_order:
+            line = self.sales_order.lines.filter(sku=self.sku).first()
+            if line:
+                return line.unit_price
+        from catalog.models import ChannelPrice
+
+        price = ChannelPrice.current_price(self.shop.channel_id, self.sku_id)
+        return price if price is not None else self.sku.current_cost_price
+
     @transaction.atomic
     def apply(self, user=None):
         entry = StockLedgerEntry.objects.create(
@@ -165,6 +220,26 @@ class SalesReturn(models.Model):
         self.ledger_entry = entry
         self.created_by = user
         self.save(update_fields=['ledger_entry', 'created_by'])
+
+        unit_price = self._resolve_unit_price()
+        revenue_reversal = self.quantity * unit_price
+        cost_reversal = self.quantity * self.sku.current_cost_price
+        if revenue_reversal > 0:
+            party = self.shop.get_or_create_party()
+            lines = [
+                {'account': ChartOfAccount.SALES_REVENUE, 'debit': revenue_reversal},
+                {'account': ChartOfAccount.ACCOUNTS_RECEIVABLE, 'credit': revenue_reversal, 'party': party},
+            ]
+            if cost_reversal > 0:
+                lines += [
+                    {'account': ChartOfAccount.INVENTORY, 'debit': cost_reversal},
+                    {'account': ChartOfAccount.COST_OF_GOODS_SOLD, 'credit': cost_reversal},
+                ]
+            JournalEntry.create_posted(
+                source=JournalEntry.SOURCE_SALE_RETURN, lines=lines,
+                narration=f'Sale return from {self.shop.name}',
+                reference=self.sales_order.so_number if self.sales_order else '', created_by=user,
+            )
 
 
 class PaymentReceipt(models.Model):
@@ -204,6 +279,22 @@ class PaymentReceipt(models.Model):
 
     def __str__(self):
         return f'{self.shop}: {self.amount} ({self.get_method_display()})'
+
+    @transaction.atomic
+    def post_to_ledger(self, user=None):
+        """Dr Cash/Bank, Cr the shop's receivable (requirement doc, Accounts #3: embedded, not a manual voucher)."""
+        cash_or_bank_code = ChartOfAccount.BANK if self.method in (self.METHOD_BANK_TRANSFER, self.METHOD_BANK_ONLINE) else ChartOfAccount.CASH
+        party = self.shop.get_or_create_party()
+        JournalEntry.create_posted(
+            source=JournalEntry.SOURCE_PAYMENT_RECEIPT,
+            lines=[
+                {'account': cash_or_bank_code, 'debit': self.amount},
+                {'account': ChartOfAccount.ACCOUNTS_RECEIVABLE, 'credit': self.amount, 'party': party},
+            ],
+            date=self.received_at.date() if hasattr(self.received_at, 'date') else self.received_at,
+            narration=f'Collection from {self.shop.name}',
+            reference=self.ptc_reference_number, created_by=user,
+        )
 
 
 class SalesTarget(models.Model):

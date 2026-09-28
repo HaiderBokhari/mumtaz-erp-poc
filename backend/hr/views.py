@@ -30,6 +30,10 @@ class SalaryPaymentViewSet(viewsets.ModelViewSet):
     permission_classes = [RolePermission]
     filterset_fields = ['employee', 'year', 'month']
 
+    def perform_create(self, serializer):
+        payment = serializer.save()
+        payment.post_to_ledger(user=self.request.user)
+
     @action(detail=False, methods=['get'])
     def slip(self, request):
         """Monthly salary slip by employee number (requirement doc, HR #4)."""

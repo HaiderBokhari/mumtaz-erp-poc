@@ -22,7 +22,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import UserProfile
-from accounting.models import Party
+from accounting.models import AccountGroup, ChartOfAccount, Party
 from catalog.models import Brand, Channel, ChannelPrice, SKU
 from distribution.models import SalesOrder, SalesOrderLine, SalesTarget, Shop
 from hr.models import Employee
@@ -106,6 +106,24 @@ DR_NAMES = [
     ('BHR_BHR_DR01', 'Tayyab', 'Hussain'),
 ]
 
+# Default Chart of Accounts (requirement doc, Accounts #1) — the well-known
+# codes that Distribution/Purchasing/Warehouses/HR auto-posting looks up via
+# ChartOfAccount.get(). Re-seeding is safe (get_or_create); this must run
+# before anything that posts a JournalEntry (purchase orders, sales orders).
+DEFAULT_ACCOUNTS = [
+    (ChartOfAccount.CASH, 'Cash', ChartOfAccount.TYPE_ASSET),
+    (ChartOfAccount.BANK, 'Bank', ChartOfAccount.TYPE_ASSET),
+    (ChartOfAccount.ACCOUNTS_RECEIVABLE, 'Accounts Receivable', ChartOfAccount.TYPE_ASSET),
+    (ChartOfAccount.INVENTORY, 'Inventory', ChartOfAccount.TYPE_ASSET),
+    (ChartOfAccount.ACCOUNTS_PAYABLE, 'Accounts Payable', ChartOfAccount.TYPE_LIABILITY),
+    (ChartOfAccount.OWNER_EQUITY, "Owner's Equity", ChartOfAccount.TYPE_EQUITY),
+    (ChartOfAccount.SALES_REVENUE, 'Sales Revenue', ChartOfAccount.TYPE_INCOME),
+    (ChartOfAccount.COST_OF_GOODS_SOLD, 'Cost of Goods Sold', ChartOfAccount.TYPE_EXPENSE),
+    (ChartOfAccount.INVENTORY_ADJUSTMENTS, 'Inventory Adjustments (damage/loss/count)', ChartOfAccount.TYPE_EXPENSE),
+    (ChartOfAccount.SALARY_EXPENSE, 'Salary Expense', ChartOfAccount.TYPE_EXPENSE),
+    (ChartOfAccount.GENERAL_EXPENSE, 'General Expense', ChartOfAccount.TYPE_EXPENSE),
+]
+
 
 class Command(BaseCommand):
     help = 'Seed demo data: roles, users, brands/SKUs, channels/pricing, warehouses, shops, sample transactions.'
@@ -115,6 +133,9 @@ class Command(BaseCommand):
         self.stdout.write('Seeding roles & users...')
         groups = self._seed_roles()
         users = self._seed_users(groups)
+
+        self.stdout.write('Seeding chart of accounts...')
+        self._seed_chart_of_accounts()
 
         self.stdout.write('Seeding warehouses...')
         warehouses = self._seed_warehouses()
@@ -185,6 +206,20 @@ class Command(BaseCommand):
         wh_staff = make_user('warehouse_sargodha', 'Warehouse', 'Staff', settings.ROLE_WAREHOUSE_STAFF, warehouse=sargodha)
 
         return {'owner': owner, 'dm': dm, 'fso': fso, 'sales_mgr': sales_mgr, 'warehouse_staff': wh_staff}
+
+    # -- Chart of accounts ---------------------------------------------------
+
+    def _seed_chart_of_accounts(self):
+        group_names = {
+            ChartOfAccount.TYPE_ASSET: 'Assets', ChartOfAccount.TYPE_LIABILITY: 'Liabilities',
+            ChartOfAccount.TYPE_EQUITY: 'Equity', ChartOfAccount.TYPE_INCOME: 'Income',
+            ChartOfAccount.TYPE_EXPENSE: 'Expenses',
+        }
+        groups = {t: AccountGroup.objects.get_or_create(name=name)[0] for t, name in group_names.items()}
+        for code, name, acc_type in DEFAULT_ACCOUNTS:
+            ChartOfAccount.objects.get_or_create(
+                code=code, defaults={'name': name, 'account_type': acc_type, 'group': groups[acc_type]}
+            )
 
     # -- Warehouses ----------------------------------------------------------
 
@@ -345,6 +380,8 @@ class Command(BaseCommand):
                     purchase_order=po, sku=sku, quantity=Decimal('100'), unit_cost=sku.current_cost_price
                 )
             po.submit()
+            if po.status == PurchaseOrder.STATUS_SUBMITTED:
+                po.receive(owner)
 
     # -- Sample sales orders -----------------------------------------------------
 

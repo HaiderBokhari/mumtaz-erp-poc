@@ -10,7 +10,10 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderLine
-        fields = ['id', 'sku', 'sku_code', 'sku_name', 'quantity', 'unit_cost', 'line_total']
+        fields = [
+            'id', 'sku', 'sku_code', 'sku_name', 'quantity', 'unit_cost',
+            'batch_number', 'expiry_date', 'line_total',
+        ]
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):

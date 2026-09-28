@@ -2,6 +2,8 @@ from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 
+from accounting.models import ChartOfAccount, JournalEntry
+
 
 class Warehouse(models.Model):
     """
@@ -69,6 +71,14 @@ class StockLedgerEntry(models.Model):
     )
     reference = models.CharField(max_length=100, blank=True, help_text='PO/SO/Transfer/Claim number')
     notes = models.CharField(max_length=255, blank=True)
+    batch_number = models.CharField(
+        max_length=50, blank=True,
+        help_text='Batch/lot number, e.g. moisture-sensitive stock — mandatory tracking for VELO (questionnaire #18).',
+    )
+    expiry_date = models.DateField(
+        null=True, blank=True,
+        help_text='Batch expiry date, e.g. for VELO (questionnaire #18). Optional for SKUs that do not need it.',
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
@@ -270,3 +280,25 @@ class StockAdjustment(models.Model):
         self.ledger_entry = entry
         self.created_by = user
         self.save(update_fields=['ledger_entry', 'created_by'])
+
+        value = self.quantity * self.sku.current_cost_price
+        if value > 0:
+            # A decrease (damage/loss/stolen, or a count correction that found
+            # less stock) is an inventory write-off expense. An increase count
+            # correction is the reverse — inventory found that wasn't on the
+            # books, offset against the same adjustments account.
+            if self.is_increase:
+                lines = [
+                    {'account': ChartOfAccount.INVENTORY, 'debit': value},
+                    {'account': ChartOfAccount.INVENTORY_ADJUSTMENTS, 'credit': value},
+                ]
+            else:
+                lines = [
+                    {'account': ChartOfAccount.INVENTORY_ADJUSTMENTS, 'debit': value},
+                    {'account': ChartOfAccount.INVENTORY, 'credit': value},
+                ]
+            JournalEntry.create_posted(
+                source=JournalEntry.SOURCE_STOCK_ADJUSTMENT, lines=lines,
+                narration=f'{self.get_reason_display()}: {self.sku.code} @ {self.warehouse.name}',
+                reference=self.ptc_claim_reference, created_by=user,
+            )
