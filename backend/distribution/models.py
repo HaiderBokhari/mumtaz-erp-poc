@@ -127,8 +127,6 @@ class SalesOrder(models.Model):
         """Dispatch stock out of the source warehouse for every line, and post the accounting entry."""
         if self.status != self.STATUS_DRAFT:
             raise ValueError('Only a draft sales order can be confirmed.')
-        revenue_total = Decimal('0')
-        cost_total = Decimal('0')
         for line in self.lines.select_related('sku'):
             StockLedgerEntry.objects.create(
                 warehouse=self.warehouse, sku=line.sku,
@@ -136,10 +134,21 @@ class SalesOrder(models.Model):
                 quantity_change=-line.quantity,
                 reference=self.so_number, created_by=user,
             )
-            revenue_total += line.quantity * line.unit_price
-            cost_total += line.quantity * line.sku.current_cost_price
         self.status = self.STATUS_CONFIRMED
         self.save(update_fields=['status'])
+        self.post_accounting_entry(user=user)
+
+    def post_accounting_entry(self, user=None):
+        """
+        Split out from confirm() so a management command can backfill this
+        for any SO that was confirmed before the accounting module existed,
+        without re-running confirm() (which would re-dispatch stock).
+        """
+        revenue_total = Decimal('0')
+        cost_total = Decimal('0')
+        for line in self.lines.select_related('sku'):
+            revenue_total += line.quantity * line.unit_price
+            cost_total += line.quantity * line.sku.current_cost_price
 
         if revenue_total > 0:
             party = self.shop.get_or_create_party()

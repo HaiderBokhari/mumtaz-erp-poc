@@ -83,7 +83,6 @@ class PurchaseOrder(models.Model):
         """Update product inventory upon purchase (requirement doc, Inventory #3), and post the accounting entry."""
         if self.status != self.STATUS_SUBMITTED:
             raise ValueError('Only a PO submitted to PTC can be received.')
-        value_total = Decimal('0')
         for line in self.lines.select_related('sku'):
             StockLedgerEntry.objects.create(
                 warehouse=self.warehouse, sku=line.sku,
@@ -92,13 +91,20 @@ class PurchaseOrder(models.Model):
                 reference=self.po_number, created_by=user,
                 batch_number=line.batch_number, expiry_date=line.expiry_date,
             )
-            value_total += line.quantity * line.unit_cost
             if line.unit_cost and line.unit_cost != line.sku.current_cost_price:
                 line.sku.set_cost_price(line.unit_cost, changed_by=user, note=f'Received on {self.po_number}')
         self.status = self.STATUS_RECEIVED
         self.received_at = timezone.now()
         self.save(update_fields=['status', 'received_at', 'updated_at'])
+        self.post_accounting_entry(user=user)
 
+    def post_accounting_entry(self, user=None):
+        """
+        Split out from receive() so a management command can backfill this
+        for any PO that was received before the accounting module existed,
+        without re-running receive() (which would re-dispatch stock).
+        """
+        value_total = self.total_value
         if value_total > 0:
             JournalEntry.create_posted(
                 source=JournalEntry.SOURCE_PURCHASE,

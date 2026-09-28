@@ -6,20 +6,17 @@
 # the very first deploy with no manual shell step.
 set -e
 
-# Opt-in, defaults to unset/False. Only for wiping a still-empty demo
-# database back to a clean slate (e.g. after a schema change that a
-# get_or_create reseed can't retrofit onto already-existing rows) — never
-# flip this on once the database holds real data, since it deletes
-# everything. Free-tier Render has no shell access, hence a flag here
-# instead of running `manage.py flush` by hand.
-if [ "$DJANGO_RESET_DEMO_DATA" = "True" ]; then
-    python manage.py flush --noinput
-fi
-
 python manage.py migrate --noinput
 
 if [ "$DJANGO_SEED_DEMO_DATA" = "True" ]; then
     python manage.py seed_demo_data
 fi
+
+# Additive and idempotent (only ever adds a missing JournalEntry, never
+# deletes anything) — safe to run unconditionally on every boot. Exists so
+# a PO/SO that reached RECEIVED/CONFIRMED before the accounting module
+# existed still ends up with its accounting entry, without needing shell
+# access on free-tier Render to run it by hand.
+python manage.py backfill_accounting_entries
 
 exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2
