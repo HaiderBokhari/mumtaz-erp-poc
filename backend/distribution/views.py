@@ -1,6 +1,6 @@
 import csv
 
-from django.db.models import Sum
+from django.db.models import Case, DecimalField, F, Sum, When
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets
@@ -9,6 +9,7 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from accounts.permissions import RolePermission
+from warehouses.models import StockLedgerEntry
 
 from .imports import TEMPLATE_COLUMNS, import_ptc_sales_file
 from .models import PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
@@ -111,6 +112,72 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
             'total_quantity': totals['total_quantity'] or 0,
             'total_value': totals['total_value'] or 0,
         })
+
+    @action(detail=False, methods=['get'])
+    def stock_movement_summary(self, request):
+        """
+        Daily distribution out/in stock summary (requirement doc,
+        Distribution #9): sales dispatched out vs. sales returns received
+        in, grouped by day and warehouse. ?date_from=&date_to=&warehouse=
+        """
+        qs = StockLedgerEntry.objects.filter(
+            entry_type__in=[StockLedgerEntry.SALE_OUT, StockLedgerEntry.SALE_RETURN_IN]
+        )
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        warehouse = request.query_params.get('warehouse')
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        if warehouse:
+            qs = qs.filter(warehouse_id=warehouse)
+
+        qty_field = DecimalField(max_digits=14, decimal_places=3)
+        rows = (
+            qs.values(date=F('created_at__date'), warehouse_name=F('warehouse__name'))
+            .annotate(
+                out_quantity=Sum(
+                    Case(When(entry_type=StockLedgerEntry.SALE_OUT, then=-F('quantity_change')), default=0, output_field=qty_field)
+                ),
+                in_quantity=Sum(
+                    Case(When(entry_type=StockLedgerEntry.SALE_RETURN_IN, then=F('quantity_change')), default=0, output_field=qty_field)
+                ),
+            )
+            .order_by('-date', 'warehouse_name')
+        )
+        return Response(list(rows))
+
+    @action(detail=False, methods=['get'])
+    def stock_movement_history(self, request):
+        """
+        Daily distribution out/in stock history report (requirement doc,
+        Distribution #10): the underlying line-item detail behind the
+        summary above. ?date_from=&date_to=&warehouse=
+        """
+        qs = StockLedgerEntry.objects.filter(
+            entry_type__in=[StockLedgerEntry.SALE_OUT, StockLedgerEntry.SALE_RETURN_IN]
+        ).select_related('warehouse', 'sku')
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        warehouse = request.query_params.get('warehouse')
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        if warehouse:
+            qs = qs.filter(warehouse_id=warehouse)
+
+        rows = [
+            {
+                'date': entry.created_at.date(), 'warehouse_name': entry.warehouse.name,
+                'sku_code': entry.sku.code, 'sku_name': entry.sku.name,
+                'entry_type': entry.entry_type, 'quantity_change': entry.quantity_change,
+                'reference': entry.reference,
+            }
+            for entry in qs.order_by('-created_at')[:500]
+        ]
+        return Response(rows)
 
     @action(detail=False, methods=['get'])
     def summary_by(self, request):

@@ -10,6 +10,12 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 interface DraftLine { sku: string; quantity: string; unit_price: string }
+interface StockMovementRow {
+  date: string
+  warehouse_name: string
+  out_quantity: string
+  in_quantity: string
+}
 
 export default function SalesOrdersPage() {
   const [orders, setOrders] = useState<SalesOrder[]>([])
@@ -25,11 +31,16 @@ export default function SalesOrdersPage() {
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
   const [uploadMsg, setUploadMsg] = useState('')
+  const [shopFilter, setShopFilter] = useState('')
+  const [showMovement, setShowMovement] = useState(false)
+  const [movement, setMovement] = useState<StockMovementRow[]>([])
 
-  async function loadOrders() {
+  async function loadOrders(shopId?: string) {
     setLoading(true)
     try {
-      const res = await api.get<Paginated<SalesOrder> | SalesOrder[]>('sales-orders/', { params: { page_size: 100, ordering: '-timestamp' } })
+      const res = await api.get<Paginated<SalesOrder> | SalesOrder[]>('sales-orders/', {
+        params: { page_size: 100, ordering: '-timestamp', shop: shopId || undefined },
+      })
       setOrders(Array.isArray(res.data) ? res.data : res.data.results)
     } finally {
       setLoading(false)
@@ -42,6 +53,14 @@ export default function SalesOrdersPage() {
     api.get<Paginated<Warehouse> | Warehouse[]>('warehouses/', { params: { page_size: 100 } }).then((res) => setWarehouses(Array.isArray(res.data) ? res.data : res.data.results))
     api.get<Paginated<SKU> | SKU[]>('skus/', { params: { page_size: 500, status: 'ACTIVE' } }).then((res) => setSkus(Array.isArray(res.data) ? res.data : res.data.results))
   }, [])
+
+  async function toggleMovement() {
+    if (!showMovement) {
+      const res = await api.get<StockMovementRow[]>('sales-orders/stock_movement_summary/')
+      setMovement(res.data)
+    }
+    setShowMovement((s) => !s)
+  }
 
   function updateLine(index: number, patch: Partial<DraftLine>) {
     setLines((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)))
@@ -120,7 +139,7 @@ export default function SalesOrdersPage() {
           <h1 className="text-xl font-semibold">Sales Orders</h1>
           <p className="text-sm text-slate-500">Manual entry, or bulk upload from PTC/BIZOM sales files.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 no-print">
           <a className="btn-secondary" href={`${api.defaults.baseURL}/sales-orders/upload_template/`} target="_blank" rel="noreferrer">
             Download upload template
           </a>
@@ -128,12 +147,41 @@ export default function SalesOrdersPage() {
             Upload PTC sales file
             <input type="file" accept=".csv,.xlsx" className="hidden" onChange={handleUpload} />
           </label>
+          <button className="btn-secondary" onClick={toggleMovement}>
+            {showMovement ? 'Hide stock movement' : 'Distribution stock movement'}
+          </button>
           <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
             {showForm ? 'Cancel' : '+ New Sales Order'}
           </button>
         </div>
       </div>
-      {uploadMsg && <div className="text-sm text-slate-600">{uploadMsg}</div>}
+      {uploadMsg && <div className="text-sm text-slate-600 no-print">{uploadMsg}</div>}
+
+      {showMovement && (
+        <div className="card overflow-x-auto">
+          <div className="flex items-center justify-between p-4 pb-0">
+            <h2 className="font-medium">Daily distribution out/in stock summary</h2>
+            <button className="btn-secondary no-print" onClick={() => window.print()}>Print</button>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr><th>Date</th><th>Warehouse</th><th className="text-right">Out (dispatched)</th><th className="text-right">In (returns)</th></tr>
+            </thead>
+            <tbody>
+              {movement.length === 0 ? (
+                <tr><td colSpan={4} className="text-center text-slate-400 py-6">No stock movement in range.</td></tr>
+              ) : movement.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.date}</td>
+                  <td>{row.warehouse_name}</td>
+                  <td className="text-right">{row.out_quantity}</td>
+                  <td className="text-right">{row.in_quantity}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleCreate} className="card p-4 space-y-4">
@@ -168,6 +216,18 @@ export default function SalesOrdersPage() {
           {error && <div className="text-sm text-red-600">{error}</div>}
         </form>
       )}
+
+      <div className="flex items-center justify-between no-print">
+        <select
+          className="input max-w-xs"
+          value={shopFilter}
+          onChange={(e) => { setShopFilter(e.target.value); loadOrders(e.target.value) }}
+        >
+          <option value="">All shops (retailers/wholesalers)</option>
+          {shops.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.channel_name})</option>)}
+        </select>
+        <button className="btn-secondary" onClick={() => window.print()}>Print</button>
+      </div>
 
       <div className="card overflow-x-auto">
         <table className="data-table">

@@ -183,6 +183,10 @@ function VouchersTab() {
   const [paymentMode, setPaymentMode] = useState<'CASH' | 'BANK'>('CASH')
   const [debitAccount, setDebitAccount] = useState('')
   const [party, setParty] = useState('')
+  const [journalLines, setJournalLines] = useState<{ account: string; party: string; debit: string; credit: string }[]>([
+    { account: '', party: '', debit: '', credit: '' },
+    { account: '', party: '', debit: '', credit: '' },
+  ])
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<number | null>(null)
 
@@ -199,20 +203,50 @@ function VouchersTab() {
       .then((res) => setParties(Array.isArray(res.data) ? res.data : res.data.results))
   }, [])
 
+  function updateJournalLine(index: number, patch: Partial<{ account: string; party: string; debit: string; credit: string }>) {
+    setJournalLines((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)))
+  }
+
+  function addJournalLine() {
+    setJournalLines((prev) => [...prev, { account: '', party: '', debit: '', credit: '' }])
+  }
+
+  function removeJournalLine(index: number) {
+    setJournalLines((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const journalTotals = journalLines.reduce(
+    (acc, l) => ({ debit: acc.debit + Number(l.debit || 0), credit: acc.credit + Number(l.credit || 0) }),
+    { debit: 0, credit: 0 },
+  )
+
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
     setError('')
+    if (voucherType === 'JOURNAL' && Math.abs(journalTotals.debit - journalTotals.credit) > 0.01) {
+      setError(`Journal voucher is not balanced: debit ${journalTotals.debit} vs credit ${journalTotals.credit}.`)
+      return
+    }
     try {
       await api.post('accounting/vouchers/', {
         voucher_type: voucherType,
         narration,
-        amount: amount || null,
+        amount: voucherType === 'JOURNAL' ? null : amount,
         payment_mode: voucherType === 'JOURNAL' ? '' : paymentMode,
-        debit_account: debitAccount ? Number(debitAccount) : null,
-        party: party ? Number(party) : null,
+        debit_account: voucherType === 'JOURNAL' ? null : (debitAccount ? Number(debitAccount) : null),
+        party: voucherType === 'JOURNAL' ? null : (party ? Number(party) : null),
+        lines: voucherType === 'JOURNAL'
+          ? journalLines
+            .filter((l) => l.account && (l.debit || l.credit))
+            .map((l) => ({
+              account: Number(l.account), party: l.party ? Number(l.party) : null,
+              debit: l.debit || '0', credit: l.credit || '0',
+            }))
+          : [],
       })
       setShowForm(false)
       setNarration(''); setAmount(''); setDebitAccount(''); setParty('')
+      setJournalLines([{ account: '', party: '', debit: '', credit: '' }, { account: '', party: '', debit: '', credit: '' }])
       loadVouchers()
     } catch (err: any) {
       setError(err?.response?.data ? JSON.stringify(err.response.data) : 'Could not create voucher.')
@@ -271,7 +305,30 @@ function VouchersTab() {
               </select>
             </div>
           )}
-          <p className="text-xs text-slate-400">Journal vouchers with custom line items can be entered from /admin/ for now.</p>
+
+          {voucherType === 'JOURNAL' && (
+            <div className="space-y-2">
+              {journalLines.map((line, i) => (
+                <div key={i} className="grid grid-cols-[1fr_1fr_110px_110px_auto] gap-2 items-center">
+                  <select className="input" value={line.account} onChange={(e) => updateJournalLine(i, { account: e.target.value })} required>
+                    <option value="">Account...</option>
+                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+                  </select>
+                  <select className="input" value={line.party} onChange={(e) => updateJournalLine(i, { party: e.target.value })}>
+                    <option value="">No party</option>
+                    {parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <input className="input" type="number" step="0.01" placeholder="Debit" value={line.debit} onChange={(e) => updateJournalLine(i, { debit: e.target.value, credit: e.target.value ? '' : line.credit })} />
+                  <input className="input" type="number" step="0.01" placeholder="Credit" value={line.credit} onChange={(e) => updateJournalLine(i, { credit: e.target.value, debit: e.target.value ? '' : line.debit })} />
+                  <button type="button" className="btn-secondary" onClick={() => removeJournalLine(i)} disabled={journalLines.length === 2}>Remove</button>
+                </div>
+              ))}
+              <button type="button" className="btn-secondary" onClick={addJournalLine}>+ Add line</button>
+              <div className={`text-sm ${Math.abs(journalTotals.debit - journalTotals.credit) > 0.01 ? 'text-red-600' : 'text-emerald-600'}`}>
+                Total debit: {journalTotals.debit.toFixed(2)} &middot; Total credit: {journalTotals.credit.toFixed(2)}
+              </div>
+            </div>
+          )}
           <button type="submit" className="btn-primary">Save Voucher</button>
           {error && <div className="text-sm text-red-600">{error}</div>}
         </form>

@@ -379,9 +379,14 @@ class Command(BaseCommand):
                 PurchaseOrderLine.objects.create(
                     purchase_order=po, sku=sku, quantity=Decimal('100'), unit_cost=sku.current_cost_price
                 )
+        # Gated by status, not `created`: a PO from a deploy that predates a
+        # status-progressing step (e.g. .receive() was added after this PO
+        # already existed in production) would otherwise stay stuck at
+        # whatever status it reached on the run that created it, forever.
+        if po.status == PurchaseOrder.STATUS_DRAFT:
             po.submit()
-            if po.status == PurchaseOrder.STATUS_SUBMITTED:
-                po.receive(owner)
+        if po.status == PurchaseOrder.STATUS_SUBMITTED:
+            po.receive(owner)
 
     # -- Sample sales orders -----------------------------------------------------
 
