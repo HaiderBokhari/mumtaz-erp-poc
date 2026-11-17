@@ -235,7 +235,7 @@ class BundleLoader:
             )
             grade = grades['VDD' if dr['area'] == 'RURAL' else 'DD']
             Employee.objects.create(
-                employee_number=code, full_name=dr['name'], cnic=f'PENDING-{code}',
+                employee_number=code, full_name=dr['name'], cnic=f"PENDING-{code.split('_')[-1]}",
                 role=f'Distribution Representative ({grade.name})', warehouse=self.hq, user=user,
                 pay_grade=grade, monthly_salary=grade.fixed, hire_date=datetime.date(2025, 1, 1),
             )
