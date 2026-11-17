@@ -31,7 +31,10 @@ class Command(BaseCommand):
         already_posted_so_refs = set(
             JournalEntry.objects.filter(source=JournalEntry.SOURCE_SALE).values_list('reference', flat=True)
         )
-        for so in SalesOrder.objects.filter(status=SalesOrder.STATUS_CONFIRMED).exclude(so_number__in=already_posted_so_refs):
+        # BIZOM uploads are the company book only; the actual book posts revenue.
+        confirmed = SalesOrder.objects.filter(status=SalesOrder.STATUS_CONFIRMED).exclude(
+            source=SalesOrder.SOURCE_BIZOM_UPLOAD)
+        for so in confirmed.exclude(so_number__in=already_posted_so_refs):
             so.post_accounting_entry(user=so.created_by)
             posted_so += 1
 

@@ -4,11 +4,14 @@ import { useAuth } from '../context/AuthContext'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: '📊' },
+  { to: '/company-vs-actual', label: 'Company vs Actual', icon: '⚖️' },
+  { to: '/settlements', label: 'DR Cash Settlement', icon: '💵' },
+  { to: '/dr-payout', label: 'DR Salary & Commission', icon: '🧮' },
   { to: '/catalog', label: 'Brands & SKUs', icon: '📦' },
   { to: '/warehouses', label: 'Warehouses & Stock', icon: '🏬' },
   { to: '/purchase-orders', label: 'Purchase Orders', icon: '🧾' },
-  { to: '/shops', label: 'Shops', icon: '🏪' },
-  { to: '/sales-orders', label: 'Sales Orders', icon: '🚚' },
+  { to: '/shops', label: 'Outlets', icon: '🏪' },
+  { to: '/sales-orders', label: 'BIZOM Invoices', icon: '🚚' },
   { to: '/accounting', label: 'Accounting', icon: '💰' },
   { to: '/hr', label: 'Human Resource', icon: '👥' },
 ]

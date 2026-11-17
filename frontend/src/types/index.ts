@@ -112,6 +112,15 @@ export interface Shop {
   credit_limit: string
   status: 'ACTIVE' | 'CLOSED'
   outstanding_balance: string
+  bizom_outlet_id?: string
+  dr?: number | null
+  dr_name?: string
+  beat?: string
+  visit_days?: string
+  area_type?: string
+  latitude?: string | null
+  longitude?: string | null
+  filer_status?: 'FILER' | 'NON_FILER'
 }
 
 export interface SalesOrderLine {
@@ -292,14 +301,95 @@ export interface LeaveRequest {
 }
 
 export interface DashboardData {
-  stock_value: string
-  todays_sales_value: string
-  todays_sales_quantity: string
-  mtd_sales_value: string
+  month: string
+  months: string[]
+  actual_sales_value: number
+  actual_sales_m: number
+  company_sales_value: number
+  company_sales_m: number
+  gap_value: number
+  gap_m: number
+  gross_profit: number
+  gross_margin_pct: number
+  net_profit: number
+  stock_value: number
+  adjusted_stock_value: number
+  stock_by_warehouse: { warehouse: string; code: string; m: number; value: number }[]
+  settlements: Partial<Record<'cash' | 'bank' | 'market_credit' | 'fbr' | 'banam' | 'wasooli' | 'short' | 'count', number>>
+  outstanding_receivables: number
   open_purchase_orders: number
   low_stock_alerts: number
-  outstanding_receivables: string
-  collections_mtd: string
-  sales_trend_30d: { day: string; value: string }[]
-  channel_breakdown_mtd: { channel__name: string; value: string }[]
+  daily: { day: string; actual_value: number; company_value: number; actual_m: number; company_m: number }[]
+  brands: { brand: string; actual_m: number; company_m: number; actual_value: number; company_value: number }[]
+  channels: { channel: string; value: number }[]
+}
+
+export interface ComparisonRow {
+  key: string
+  label: string
+  company_m: number
+  company_value: number
+  actual_m: number
+  actual_value: number
+  gap_m: number
+  gap_value: number
+  gap_pct: number | null
+  assumed: boolean
+}
+
+export interface DRSettlement {
+  id: number
+  date: string
+  dr: number
+  dr_name: string
+  dr_code: string
+  warehouse: number
+  total_sale: string
+  fbr: string
+  scattered_wholesale: string
+  madam_banam_fmc: string
+  madam_banam_nc: string
+  madam_wasooli: string
+  notes_5000: number
+  notes_1000: number
+  notes_500: number
+  notes_100: number
+  notes_50: number
+  notes_20: number
+  notes_10: number
+  bank_transfer_1: string
+  bank_transfer_2: string
+  bank_transfer_3: string
+  expense: string
+  market_credit: string
+  remarks: string
+  total_cash: string
+  total_bank: string
+  total_banam: string
+  total_accounted: string
+  difference: string
+  is_posted: boolean
+}
+
+export interface PayoutRow {
+  dr_id: number
+  dr_code: string
+  name: string
+  grade: string
+  retail_m: number
+  scattered_m: number
+  actual_m: number
+  actual_value: number
+  target_m: number
+  achievement_pct: number | null
+  target_achieved: boolean
+  fixed: number
+  attendance: number
+  target_bonus: number
+  vr_allowance: number
+  rtm_allowance: number
+  salary_total: number
+  commission: number
+  total_payable: number
+  assumed: boolean
 }

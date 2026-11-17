@@ -88,6 +88,32 @@ tractable later: a second ledger dimension (or a `book` field on
 `StockLedgerEntry`) can separate Company-On-Hand from Actual-On-Hand
 without redesigning anything.
 
+## Two books: company (BIZOM) vs actual — and real client data
+
+Mumtaz & Co run an "adjustment" practice (client WhatsApp, 24 Oct 2026):
+**Madam Banam** = invoiced in BIZOM but the stock stays in the godown;
+**Madam Wasooli** = sold physically with no BIZOM invoice. So:
+
+- `SalesOrder` with `source=BIZOM_UPLOAD` is the **company book** — no stock
+  movement, no revenue posting (`backfill_accounting_entries` skips them).
+- `distribution.ActualSale` is the **actual book** (their daily actual-sale
+  sheet). Physical stock (`SALE_OUT`), revenue/COGS and DR settlement follow it.
+- `distribution.DRSettlement` mirrors their paper cash slip (KPO portion +
+  DR portion, difference = short/excess). Banam stock is moved into the
+  `SGD-ADJ` "Adjusted Stock (Madam)" godown.
+- Reports: `reports/company-vs-actual`, `madam-register`, `dr-payout`
+  (pay grade + commission per M, `hr.PayGrade` / `hr.CommissionRate`).
+
+**Real client data never goes into git — the GitHub repo is public.** Their
+files live in git-ignored `artifacts/` and `client_data/`. Flow:
+`build_client_bundle` (reads their exports → `client_data/bundle.json.gz`) →
+`load_client_bundle <file>` locally, or POST the file to the owner-only
+`/api/admin/client-bundle/` on a deployed instance. Loading **resets**
+business data (keeps staff logins, roles, warehouses, chart of accounts) and
+seeds what the files lack (opening stock, weekly PTC POs, cash/bank split of
+settlements, expenses, targets) — those rows are labelled "seeded".
+`seed_demo_data` skips demo shops/SKUs/sales once client data is present.
+
 ## What's fully built vs. stubbed
 
 **Fully built** (models + API + Django admin, most with a frontend page):

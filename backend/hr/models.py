@@ -5,6 +5,45 @@ from django.utils import timezone
 from accounting.models import ChartOfAccount, JournalEntry
 
 
+class PayGrade(models.Model):
+    """
+    Monthly pay structure per role, from Mumtaz & Co's "Revised Salary
+    Structure for all Depots": a fixed amount plus attendance, target and
+    VR allowances (and RTM for FSOs). DR commission is on top, per M sold
+    (see CommissionRate).
+    """
+
+    name = models.CharField(max_length=50, unique=True, help_text='e.g. DD, VDD, FSO, Spare DR')
+    fixed = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    attendance_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    target_bonus = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0, help_text='Paid when the monthly volume target is met.',
+    )
+    vr_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    rtm_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class CommissionRate(models.Model):
+    """
+    DR commission per M sold, by SKU and by how it was sold (retail vs
+    scattered wholesale), from the distributor's "Brand wise commission
+    per M" sheet. Paid on top of salary.
+    """
+
+    sku = models.OneToOneField('catalog.SKU', on_delete=models.CASCADE, related_name='commission_rate')
+    retail_per_m = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    scattered_per_m = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    def __str__(self):
+        return f'{self.sku.code}: {self.retail_per_m}/{self.scattered_per_m} per M'
+
+
 class Employee(models.Model):
     """
     Requirement doc, HR #1: "Create, view, edit and terminate an employee
@@ -32,6 +71,9 @@ class Employee(models.Model):
         related_name='employee_record', help_text='Linked login account, if this employee has system access.',
     )
     monthly_salary = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    pay_grade = models.ForeignKey(
+        PayGrade, null=True, blank=True, on_delete=models.SET_NULL, related_name='employees',
+    )
     commission_rate = models.DecimalField(
         max_digits=6, decimal_places=2, default=0,
         help_text='Default commission, either a flat monthly amount or a % of sales depending on role.',

@@ -21,3 +21,6 @@ venv/
 .git/
 docs/
 run.md
+artifacts/
+client_data/
+*.m4a

@@ -4,6 +4,8 @@ from django.http import HttpResponse
 from django.urls import include, path, re_path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from core.views import ClientBundleUploadView
+
 urlpatterns = [
     path('admin/', admin.site.urls),
 
@@ -18,6 +20,7 @@ urlpatterns = [
     path('api/', include('distribution.urls')),
     path('api/', include('hr.urls')),
     path('api/reports/', include('reports.urls')),
+    path('api/admin/client-bundle/', ClientBundleUploadView.as_view(), name='client-bundle'),
 ]
 
 # In a deployment that serves the built React SPA alongside the API

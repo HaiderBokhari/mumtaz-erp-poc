@@ -69,6 +69,7 @@ class ChartOfAccount(models.Model):
     BANK = '1010'
     ACCOUNTS_RECEIVABLE = '1100'
     INVENTORY = '1200'
+    ADVANCE_TAX_FBR = '1300'
     ACCOUNTS_PAYABLE = '2100'
     OWNER_EQUITY = '3000'
     SALES_REVENUE = '4000'
@@ -122,10 +123,12 @@ class Party(models.Model):
     SUPPLIER = 'SUPPLIER'
     RETAILER = 'RETAILER'
     WHOLESALER = 'WHOLESALER'
+    DR = 'DR'
     PARTY_TYPE_CHOICES = [
         (SUPPLIER, 'Supplier'),
         (RETAILER, 'Retailer'),
         (WHOLESALER, 'Wholesaler'),
+        (DR, 'DR (daily cash settlement account)'),
     ]
 
     name = models.CharField(max_length=150)

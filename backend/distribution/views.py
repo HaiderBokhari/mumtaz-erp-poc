@@ -12,9 +12,9 @@ from accounts.permissions import RolePermission
 from warehouses.models import StockLedgerEntry
 
 from .imports import TEMPLATE_COLUMNS, import_ptc_sales_file
-from .models import PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
+from .models import DRSettlement, PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
 from .serializers import (
-    PaymentReceiptSerializer, SalesOrderSerializer, SalesReturnSerializer,
+    DRSettlementSerializer, PaymentReceiptSerializer, SalesOrderSerializer, SalesReturnSerializer,
     SalesTargetSerializer, ShopSerializer,
 )
 
@@ -31,11 +31,35 @@ def _next_so_number():
 
 class ShopViewSet(viewsets.ModelViewSet):
     """Shop lifecycle management (requirement doc, Distribution #2)."""
-    queryset = Shop.objects.select_related('channel').all()
+    queryset = Shop.objects.select_related('channel', 'dr', 'party').all()
     serializer_class = ShopSerializer
     permission_classes = [RolePermission]
-    filterset_fields = ['channel', 'status']
-    search_fields = ['name', 'locality', 'contact_phone']
+    filterset_fields = ['channel', 'status', 'dr', 'channel__channel_type', 'area_type']
+    search_fields = ['name', 'locality', 'contact_phone', 'address', 'bizom_outlet_id', 'beat']
+
+
+class DRSettlementViewSet(viewsets.ModelViewSet):
+    """
+    DR end-of-day cash settlement, laid out like the distributor's paper
+    slip (KPO portion + DR portion, difference = short/excess).
+    """
+    queryset = DRSettlement.objects.select_related('dr__profile', 'warehouse').all()
+    serializer_class = DRSettlementSerializer
+    permission_classes = [RolePermission]
+    filterset_fields = ['date', 'dr', 'warehouse']
+    search_fields = ['dr__first_name', 'dr__profile__dr_code', 'remarks']
+    ordering_fields = ['date', 'total_sale']
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def post_to_ledger(self, request, pk=None):
+        settlement = self.get_object()
+        if settlement.posted_entry_id:
+            return Response({'detail': 'Already posted.'}, status=400)
+        settlement.post_to_ledger(user=request.user)
+        return Response(DRSettlementSerializer(settlement).data)
 
 
 class SalesOrderViewSet(viewsets.ModelViewSet):

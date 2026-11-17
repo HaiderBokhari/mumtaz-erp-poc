@@ -115,6 +115,7 @@ DEFAULT_ACCOUNTS = [
     (ChartOfAccount.BANK, 'Bank', ChartOfAccount.TYPE_ASSET),
     (ChartOfAccount.ACCOUNTS_RECEIVABLE, 'Accounts Receivable', ChartOfAccount.TYPE_ASSET),
     (ChartOfAccount.INVENTORY, 'Inventory', ChartOfAccount.TYPE_ASSET),
+    (ChartOfAccount.ADVANCE_TAX_FBR, 'Advance income tax withheld (FBR)', ChartOfAccount.TYPE_ASSET),
     (ChartOfAccount.ACCOUNTS_PAYABLE, 'Accounts Payable', ChartOfAccount.TYPE_LIABILITY),
     (ChartOfAccount.OWNER_EQUITY, "Owner's Equity", ChartOfAccount.TYPE_EQUITY),
     (ChartOfAccount.SALES_REVENUE, 'Sales Revenue', ChartOfAccount.TYPE_INCOME),
@@ -139,6 +140,14 @@ class Command(BaseCommand):
 
         self.stdout.write('Seeding warehouses...')
         warehouses = self._seed_warehouses()
+
+        from core.client_bundle import client_data_loaded
+
+        if client_data_loaded():
+            # Real Mumtaz & Co data has been loaded (load_client_bundle);
+            # don't mix made-up shops, SKUs or sales into it.
+            self.stdout.write(self.style.SUCCESS('Client data present: kept roles, logins and accounts; skipped demo data.'))
+            return
 
         self.stdout.write('Seeding brands & SKUs...')
         skus = self._seed_catalog(users['owner'])

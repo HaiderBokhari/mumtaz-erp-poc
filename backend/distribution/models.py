@@ -34,6 +34,19 @@ class Shop(models.Model):
         'accounting.Party', null=True, blank=True, on_delete=models.SET_NULL, related_name='shop',
         help_text='Accounting party this shop posts its receivable ledger against (Accounts #5).',
     )
+    # Outlet master fields as they come from BIZOM's Customer List export
+    # (questionnaire: BIZOM is the sales data source). Blank for shops
+    # entered by hand.
+    bizom_outlet_id = models.CharField(max_length=20, blank=True, db_index=True)
+    dr = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='outlets', help_text='DR whose beat this outlet is on.',
+    )
+    beat = models.CharField(max_length=255, blank=True)
+    visit_days = models.CharField(max_length=100, blank=True)
+    area_type = models.CharField(max_length=10, blank=True, help_text='URBAN / RURAL / MANDI, from BIZOM.')
+    latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -65,6 +78,10 @@ class Shop(models.Model):
         """
         if self.party_id:
             return self.party.balance
+        if self.bizom_outlet_id:
+            # BIZOM outlets settle with their DR in cash on the day; any credit
+            # sits on the DR's settlement (market credit), not on the outlet.
+            return Decimal('0')
         invoiced = self.sales_orders.filter(status=SalesOrder.STATUS_CONFIRMED).aggregate(
             total=models.Sum(models.F('lines__quantity') * models.F('lines__unit_price'))
         )['total'] or Decimal('0')
@@ -327,3 +344,184 @@ class SalesTarget(models.Model):
 
     def __str__(self):
         return f'{self.dr} / {self.channel} {self.month}-{self.year}: {self.target_volume_m}M'
+
+
+class ActualSale(models.Model):
+    """
+    The "actual" book: what DRs physically sold, per day, SKU and bucket,
+    as kept in Mumtaz & Co's own daily "ACTUAL SALE" sheet. BIZOM sales
+    orders (source=BIZOM_UPLOAD) are the *company* book and can differ
+    because of adjustments: "Madam Banam" (invoiced in BIZOM, stock stays
+    in the godown) and "Madam Wasooli" (sold physically, no BIZOM invoice).
+    US-19: the owner wants actual sales, with the company version beside it.
+
+    Physical stock follows this book, so each row is backed by a SALE_OUT
+    ledger entry (reference ``ACT-<dr code>-<date>``).
+    """
+
+    BUCKET_RETAIL = 'RETAIL'
+    BUCKET_SCATTERED = 'SCATTERED'
+    BUCKET_CHOICES = [
+        (BUCKET_RETAIL, 'Sold in retail'),
+        (BUCKET_SCATTERED, 'Sold in scattered wholesale'),
+    ]
+
+    SOURCE_SHEET = 'SHEET'
+    SOURCE_BIZOM_ASSUMED = 'BIZOM_ASSUMED'
+    SOURCE_MANUAL = 'MANUAL'
+    SOURCE_CHOICES = [
+        (SOURCE_SHEET, "From the distributor's daily actual-sale sheet"),
+        (SOURCE_BIZOM_ASSUMED, 'Not on the actual-sale sheet; BIZOM volume assumed actual (e.g. shop sale)'),
+        (SOURCE_MANUAL, 'Entered manually'),
+    ]
+
+    date = models.DateField(db_index=True)
+    dr = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='actual_sales')
+    warehouse = models.ForeignKey('warehouses.Warehouse', on_delete=models.PROTECT, related_name='actual_sales')
+    sku = models.ForeignKey('catalog.SKU', on_delete=models.PROTECT, related_name='actual_sales')
+    bucket = models.CharField(max_length=10, choices=BUCKET_CHOICES, default=BUCKET_RETAIL)
+    quantity_m = models.DecimalField(max_digits=14, decimal_places=3, help_text="Volume in M's (1,000 sticks).")
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, help_text='Price per M.')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date', 'dr', 'sku']
+        unique_together = ['date', 'dr', 'sku', 'bucket']
+
+    def __str__(self):
+        return f'{self.date} {self.dr} {self.sku.code} {self.quantity_m}M'
+
+    @property
+    def value(self):
+        return self.quantity_m * self.unit_price
+
+
+class DRSettlement(models.Model):
+    """
+    A DR's end-of-day cash settlement, laid out exactly like Mumtaz & Co's
+    paper slip: the KPO fills the top (sale, FBR, adjustments), the DR fills
+    the bottom (cash by note, bank transfers, expense, market credit), and
+    the difference is the DR's short/excess for the day.
+
+    total_sale is the BIZOM (company) value. Banam is the part of it that
+    was invoiced but not physically sold; Wasooli is money for stock sold
+    without an invoice. So the DR should hand over
+    total_sale - banam + wasooli - FBR.
+    """
+
+    NOTE_DENOMINATIONS = [5000, 1000, 500, 100, 50, 20, 10]
+
+    date = models.DateField(db_index=True)
+    dr = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='settlements')
+    warehouse = models.ForeignKey('warehouses.Warehouse', on_delete=models.PROTECT, related_name='settlements')
+
+    # KPO portion
+    total_sale = models.DecimalField(max_digits=14, decimal_places=2)
+    fbr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    scattered_wholesale = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    madam_banam_fmc = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    madam_banam_nc = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    madam_wasooli = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    # DR portion
+    notes_5000 = models.PositiveIntegerField(default=0)
+    notes_1000 = models.PositiveIntegerField(default=0)
+    notes_500 = models.PositiveIntegerField(default=0)
+    notes_100 = models.PositiveIntegerField(default=0)
+    notes_50 = models.PositiveIntegerField(default=0)
+    notes_20 = models.PositiveIntegerField(default=0)
+    notes_10 = models.PositiveIntegerField(default=0)
+    bank_transfer_1 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    bank_transfer_2 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    bank_transfer_3 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    expense = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    market_credit = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    remarks = models.CharField(max_length=255, blank=True)
+    posted_entry = models.OneToOneField(
+        'accounting.JournalEntry', null=True, blank=True, on_delete=models.SET_NULL, related_name='settlement',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date', 'dr__profile__dr_code']
+        unique_together = ['date', 'dr']
+
+    def __str__(self):
+        return f'{self.date} {self.dr}'
+
+    @property
+    def total_cash(self):
+        return Decimal(sum(getattr(self, f'notes_{d}') * d for d in self.NOTE_DENOMINATIONS))
+
+    @property
+    def total_bank(self):
+        return self.bank_transfer_1 + self.bank_transfer_2 + self.bank_transfer_3
+
+    @property
+    def total_banam(self):
+        return self.madam_banam_fmc + self.madam_banam_nc
+
+    @property
+    def total_accounted(self):
+        """The slip's TOTAL line: everything the DR handed over or that is adjusted against the sale."""
+        return (
+            self.total_cash + self.total_bank + self.expense + self.market_credit
+            + self.total_banam + self.fbr
+        )
+
+    @property
+    def difference(self):
+        """Positive = DR is short; negative = DR handed over more than due."""
+        return self.total_sale + self.madam_wasooli - self.total_accounted
+
+    @transaction.atomic
+    def post_to_ledger(self, user=None):
+        """
+        Clear the DR's account for the money handed over: Dr Cash / Bank /
+        Expense / FBR advance tax / Market credit receivable, Cr the DR.
+        The DR's account was debited with the actual sale value when the
+        day's actual sales were posted, so whatever stays on it is the DR's
+        shortage. Banam is company-book only and has no ledger effect.
+        """
+        dr_party = dr_party_for(self.dr)
+        lines = []
+        if self.total_cash:
+            lines.append({'account': ChartOfAccount.CASH, 'debit': self.total_cash})
+        if self.total_bank:
+            lines.append({'account': ChartOfAccount.BANK, 'debit': self.total_bank})
+        if self.expense:
+            lines.append({'account': ChartOfAccount.GENERAL_EXPENSE, 'debit': self.expense})
+        if self.fbr:
+            lines.append({'account': ChartOfAccount.ADVANCE_TAX_FBR, 'debit': self.fbr})
+        if self.market_credit:
+            credit_party, _ = Party.objects.get_or_create(
+                name='Market credit (retailers on DR credit)', defaults={'party_type': Party.RETAILER},
+            )
+            lines.append({'account': ChartOfAccount.ACCOUNTS_RECEIVABLE, 'debit': self.market_credit, 'party': credit_party})
+        handed_over = sum((line['debit'] for line in lines), Decimal('0'))
+        if not handed_over:
+            return None
+        lines.append({'account': ChartOfAccount.ACCOUNTS_RECEIVABLE, 'credit': handed_over, 'party': dr_party})
+        entry = JournalEntry.create_posted(
+            source=JournalEntry.SOURCE_PAYMENT_RECEIPT, lines=lines, date=self.date,
+            narration=f'DR settlement: {self.dr.get_full_name()}',
+            reference=f'SETTLE-{self.dr.profile.dr_code}-{self.date:%Y%m%d}', created_by=user,
+        )
+        self.posted_entry = entry
+        self.save(update_fields=['posted_entry'])
+        return entry
+
+
+def dr_party_for(user):
+    """The accounting Party a DR's daily sales and settlements post against."""
+    code = getattr(getattr(user, 'profile', None), 'dr_code', '') or user.username
+    party, _ = Party.objects.get_or_create(
+        name=f'DR {code} - {user.get_full_name() or user.username}',
+        defaults={'party_type': Party.DR},
+    )
+    return party

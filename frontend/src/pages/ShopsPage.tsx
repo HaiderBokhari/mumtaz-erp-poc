@@ -5,24 +5,42 @@ import { formatMoney } from '../utils/format'
 
 export default function ShopsPage() {
   const [shops, setShops] = useState<Shop[]>([])
+  const [count, setCount] = useState(0)
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [channelType, setChannelType] = useState('')
   const [channels, setChannels] = useState<Channel[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ name: '', channel: '', locality: '', address: '', contact_name: '', contact_phone: '', credit_limit: '0' })
   const [error, setError] = useState('')
+  const PAGE_SIZE = 50
 
   async function loadShops() {
     setLoading(true)
     try {
-      const res = await api.get<Paginated<Shop> | Shop[]>('shops/', { params: { page_size: 200 } })
-      setShops(Array.isArray(res.data) ? res.data : res.data.results)
+      const params: Record<string, string | number> = { page, page_size: PAGE_SIZE }
+      if (search) params.search = search
+      if (channelType) params.channel__channel_type = channelType
+      const res = await api.get<Paginated<Shop> | Shop[]>('shops/', { params })
+      if (Array.isArray(res.data)) {
+        setShops(res.data)
+        setCount(res.data.length)
+      } else {
+        setShops(res.data.results)
+        setCount(res.data.count)
+      }
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadShops()
+    const timer = setTimeout(loadShops, 250)
+    return () => clearTimeout(timer)
+  }, [page, search, channelType])
+
+  useEffect(() => {
     api.get<Paginated<Channel> | Channel[]>('channels/', { params: { page_size: 100 } })
       .then((res) => setChannels(Array.isArray(res.data) ? res.data : res.data.results))
   }, [])
@@ -44,8 +62,11 @@ export default function ShopsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Shops</h1>
-          <p className="text-sm text-slate-500">Retailers, wholesalers and mandi traders &mdash; the buyer side of every sales order.</p>
+          <h1 className="text-xl font-semibold">Outlets</h1>
+          <p className="text-sm text-slate-500">
+            {formatMoney(count)} outlets from BIZOM, each on a DR&rsquo;s beat. Channel comes from BIZOM&rsquo;s
+            retail/wholesale and urban/rural/mandi fields; filer status from the outlet&rsquo;s price list.
+          </p>
         </div>
         <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
           {showForm ? 'Cancel' : '+ New Shop'}
@@ -69,32 +90,60 @@ export default function ShopsPage() {
         </form>
       )}
 
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="input w-72" placeholder="Search name, address, BIZOM ID or beat..."
+          value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+        />
+        <select className="input w-auto" value={channelType} onChange={(e) => { setChannelType(e.target.value); setPage(1) }}>
+          <option value="">All channels</option>
+          <option value="DD">DD &mdash; urban retail</option>
+          <option value="VDD">VDD &mdash; rural retail</option>
+          <option value="WS">UWS &mdash; urban wholesale</option>
+          <option value="VWS">RWS &mdash; rural wholesale</option>
+          <option value="MANDI">Mandi</option>
+        </select>
+      </div>
+
       <div className="card overflow-x-auto">
         <table className="data-table">
           <thead>
-            <tr><th>Name</th><th>Channel</th><th>Locality</th><th className="text-right">Credit limit</th><th className="text-right">Outstanding</th><th>Status</th></tr>
+            <tr><th>Outlet</th><th>DR</th><th>Channel</th><th>Area</th><th>Visit days</th><th>Filer</th><th className="text-right">Outstanding</th></tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="text-center text-slate-400 py-6">Loading...</td></tr>
+              <tr><td colSpan={7} className="text-center text-slate-400 py-6">Loading...</td></tr>
             ) : shops.length === 0 ? (
-              <tr><td colSpan={6} className="text-center text-slate-400 py-6">No shops registered yet.</td></tr>
+              <tr><td colSpan={7} className="text-center text-slate-400 py-6">No outlets match.</td></tr>
             ) : shops.map((shop) => (
               <tr key={shop.id}>
-                <td>{shop.name}</td>
-                <td>{shop.channel_name}</td>
-                <td>{shop.locality}</td>
-                <td className="text-right">Rs {formatMoney(shop.credit_limit)}</td>
-                <td className="text-right">Rs {formatMoney(shop.outstanding_balance)}</td>
                 <td>
-                  <span className={`badge ${shop.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>
-                    {shop.status}
+                  <div className="font-medium">{shop.name}</div>
+                  <div className="text-xs text-slate-400">
+                    {shop.bizom_outlet_id ? `BIZOM ${shop.bizom_outlet_id} · ` : ''}{shop.address}
+                  </div>
+                </td>
+                <td>{shop.dr_name || '—'}</td>
+                <td>{shop.channel_name}</td>
+                <td>{shop.area_type || shop.locality}</td>
+                <td className="text-xs">{shop.visit_days?.replace(/;/g, ', ') || '—'}</td>
+                <td>
+                  <span className={`badge ${shop.filer_status === 'FILER' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                    {shop.filer_status === 'FILER' ? 'Filer' : 'Non-filer'}
                   </span>
                 </td>
+                <td className="text-right">Rs {formatMoney(shop.outstanding_balance)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        <div className="flex items-center justify-between px-3 py-2 text-sm text-slate-500">
+          <span>Page {page} of {Math.max(1, Math.ceil(count / PAGE_SIZE))}</span>
+          <div className="flex gap-2">
+            <button className="btn-secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
+            <button className="btn-secondary" disabled={page * PAGE_SIZE >= count} onClick={() => setPage(page + 1)}>Next</button>
+          </div>
+        </div>
       </div>
     </div>
   )

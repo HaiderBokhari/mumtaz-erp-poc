@@ -122,6 +122,24 @@ class StockLevel(models.Model):
         level.quantity = models.F('quantity') + delta
         level.save(update_fields=['quantity', 'updated_at'])
 
+    @classmethod
+    @transaction.atomic
+    def rebuild_from_ledger(cls):
+        """
+        Recompute every cached level from the ledger. Needed after ledger rows
+        are bulk-inserted (bulk_create skips StockLedgerEntry.save()), e.g. by
+        the client data loader; the ledger stays the source of truth.
+        """
+        totals = (
+            StockLedgerEntry.objects.values('warehouse_id', 'sku_id')
+            .annotate(total=models.Sum('quantity_change'))
+        )
+        cls.objects.all().delete()
+        cls.objects.bulk_create(
+            [cls(warehouse_id=t['warehouse_id'], sku_id=t['sku_id'], quantity=t['total']) for t in totals],
+            batch_size=1000,
+        )
+
 
 class SafetyStockLevel(models.Model):
     """

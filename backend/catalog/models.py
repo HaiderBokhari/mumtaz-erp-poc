@@ -43,7 +43,22 @@ class SKU(models.Model):
         (STATUS_DISCONTINUED, 'Discontinued'),
     ]
 
+    # PTC splits its range into FMC (cigarettes) and NC (nicotine pouches,
+    # i.e. VELO) — Mumtaz & Co's "FMC AND NC" price list and cash slip keep
+    # the two apart (e.g. "Adjustment FMC" vs "Adjustment NC").
+    CATEGORY_FMC = 'FMC'
+    CATEGORY_NC = 'NC'
+    CATEGORY_CHOICES = [
+        (CATEGORY_FMC, 'FMC (cigarettes)'),
+        (CATEGORY_NC, 'NC (nicotine pouches)'),
+    ]
+
     code = models.CharField(max_length=30, unique=True, help_text='Internal SKU code, e.g. DNH-20HL')
+    bizom_name = models.CharField(
+        max_length=150, blank=True, db_index=True,
+        help_text='Exact SKU name in BIZOM exports, used to match uploaded sales lines.',
+    )
+    category = models.CharField(max_length=3, choices=CATEGORY_CHOICES, default=CATEGORY_FMC)
     name = models.CharField(max_length=150)
     brand = models.ForeignKey(Brand, on_delete=models.PROTECT, related_name='skus')
     variant = models.CharField(max_length=100, blank=True, help_text='e.g. Lights, Swiss, Regular')

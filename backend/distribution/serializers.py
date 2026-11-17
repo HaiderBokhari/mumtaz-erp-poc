@@ -1,11 +1,13 @@
 from rest_framework import serializers
 
-from .models import PaymentReceipt, SalesOrder, SalesOrderLine, SalesReturn, SalesTarget, Shop
+from .models import DRSettlement, PaymentReceipt, SalesOrder, SalesOrderLine, SalesReturn, SalesTarget, Shop
 
 
 class ShopSerializer(serializers.ModelSerializer):
     channel_name = serializers.CharField(source='channel.name', read_only=True)
     outstanding_balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    dr_name = serializers.CharField(source='dr.first_name', read_only=True, default='')
+    filer_status = serializers.CharField(source='channel.filer_status', read_only=True)
 
     class Meta:
         model = Shop
@@ -13,7 +15,10 @@ class ShopSerializer(serializers.ModelSerializer):
             'id', 'name', 'channel', 'channel_name', 'address', 'locality',
             'contact_name', 'contact_phone', 'credit_limit', 'status',
             'closed_on', 'outstanding_balance', 'created_at', 'updated_at',
+            'bizom_outlet_id', 'dr', 'dr_name', 'beat', 'visit_days', 'area_type',
+            'latitude', 'longitude', 'filer_status',
         ]
+        read_only_fields = ['bizom_outlet_id']
 
 
 class SalesOrderLineSerializer(serializers.ModelSerializer):
@@ -108,3 +113,29 @@ class SalesUploadResultSerializer(serializers.Serializer):
     orders_created = serializers.IntegerField()
     rows_processed = serializers.IntegerField()
     errors = serializers.ListField(child=serializers.CharField())
+
+
+class DRSettlementSerializer(serializers.ModelSerializer):
+    dr_name = serializers.CharField(source='dr.first_name', read_only=True)
+    dr_code = serializers.CharField(source='dr.profile.dr_code', read_only=True)
+    total_cash = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    total_bank = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    total_banam = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    total_accounted = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    difference = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    is_posted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DRSettlement
+        fields = [
+            'id', 'date', 'dr', 'dr_name', 'dr_code', 'warehouse',
+            'total_sale', 'fbr', 'scattered_wholesale', 'madam_banam_fmc', 'madam_banam_nc', 'madam_wasooli',
+            'notes_5000', 'notes_1000', 'notes_500', 'notes_100', 'notes_50', 'notes_20', 'notes_10',
+            'bank_transfer_1', 'bank_transfer_2', 'bank_transfer_3', 'expense', 'market_credit',
+            'remarks', 'total_cash', 'total_bank', 'total_banam', 'total_accounted', 'difference',
+            'is_posted', 'created_at',
+        ]
+        read_only_fields = ['created_at']
+
+    def get_is_posted(self, obj):
+        return obj.posted_entry_id is not None

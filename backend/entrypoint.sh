@@ -19,4 +19,6 @@ fi
 # access on free-tier Render to run it by hand.
 python manage.py backfill_accounting_entries
 
-exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2
+# Long timeout: loading a client data bundle via /api/admin/client-bundle/
+# takes a minute or two on free-tier hardware.
+exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 900

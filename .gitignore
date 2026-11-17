@@ -22,3 +22,10 @@ frontend/vite.config.d.ts
 .idea/
 *.swp
 venv/
+
+# Real client data and discovery notes — never commit (the GitHub repo is public).
+# The loader reads client_data/ locally and uploads it to the deployed app.
+artifacts/
+client_data/
+*.m4a
+*.opus
