@@ -352,8 +352,13 @@ class BundleLoader:
 
     def _velo_mix(self, date, code):
         """The actual sheet has one VELO column; split it like that DR's BIZOM Velo sales that day."""
-        mix = [(name, m) for (d, c, name), (m, _v, _a) in self.bizom.items()
-               if d == date and c == code and self.skus[name].category == SKU.CATEGORY_NC and m > 0]
+        if not hasattr(self, '_velo_index'):
+            # Built once: scanning every BIZOM row per call is far too slow on a small server.
+            self._velo_index = defaultdict(list)
+            for (d, c, name), (m, _v, _a) in self.bizom.items():
+                if m > 0 and self.skus[name].category == SKU.CATEGORY_NC:
+                    self._velo_index[(d, c)].append((name, m))
+        mix = self._velo_index.get((date, code), [])
         total = sum((m for _n, m in mix), D0)
         if not total:
             return [('VELO Polar Mint 10MG', Decimal('1'))]
@@ -411,6 +416,9 @@ class BundleLoader:
                                    address='PTC, Sargodha territory')
         self.ptc = ptc
         self.pos = []
+        by_sku_days = defaultdict(list)
+        for (sku_name, day), m in bizom_by_sku_day.items():
+            by_sku_days[sku_name].append((day, m))
         week_start = self.month_start
         n = 1
         while week_start <= self.month_end:
@@ -421,8 +429,8 @@ class BundleLoader:
                 notes='Seeded: weekly lifting sized to BIZOM volume',
             )
             for sku_name, sku in self.skus.items():
-                qty = sum((m for (s, d), m in bizom_by_sku_day.items()
-                           if s == sku_name and week_start <= d <= week_end), D0)
+                qty = sum((m for d, m in by_sku_days.get(sku_name, ())
+                           if week_start <= d <= week_end), D0)
                 if qty > 0:
                     PurchaseOrderLine.objects.create(
                         purchase_order=po, sku=sku, quantity=q3(qty), unit_cost=sku.current_cost_price,
