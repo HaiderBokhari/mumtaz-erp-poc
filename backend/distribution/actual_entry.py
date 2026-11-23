@@ -23,7 +23,7 @@ from accounting.models import ChartOfAccount, JournalEntry
 from catalog.models import SKU, Channel, ChannelPrice
 from warehouses.models import StockLedgerEntry, Warehouse
 
-from .models import ActualSale, dr_party_for
+from .models import ActualSale, DRIssuance, dr_party_for
 
 D0 = Decimal('0')
 
@@ -78,9 +78,29 @@ def q2(value):
 
 def _drs():
     return (
-        User.objects.filter(groups__name=settings.ROLE_DR)
+        # Discontinued BIZOM devices (DR05/13/29, 23 Nov 2026) are made inactive.
+        User.objects.filter(groups__name=settings.ROLE_DR, is_active=True)
         .select_related('profile').order_by('profile__dr_code')
     )
+
+
+def _retail_channel():
+    return Channel.objects.filter(
+        channel_type=Channel.TYPE_DD, filer_status=Channel.NON_FILER).order_by('id').first()
+
+
+def column_prices(day):
+    """Rs per M for each sheet column: the BIZOM retail (DD, non-filer) price of its main SKU."""
+    channel = _retail_channel()
+    skus = {s.bizom_name or s.name: s for s in SKU.objects.all()}
+    prices = {}
+    for column in SHEET_COLUMNS:
+        sku = skus.get(default_sku_name(column))
+        if sku is None:
+            continue
+        price = (ChannelPrice.current_price(channel.id, sku.id, day) if channel else None) or sku.current_cost_price
+        prices[column['key']] = str(price)
+    return prices
 
 
 def day_grid(day):
@@ -90,9 +110,14 @@ def day_grid(day):
         key = column_for_sku(sale.sku)
         if key:
             values[sale.dr_id][sale.bucket][key] += sale.quantity_m
+    issuance = defaultdict(dict)
+    for row in DRIssuance.objects.filter(date=day):
+        issuance[str(row.dr_id)][row.column] = [str(row.issued_m), str(row.returned_m)]
     return {
         'date': day.isoformat(),
         'columns': [{'key': c['key'], 'label': c['label']} for c in SHEET_COLUMNS],
+        'prices': column_prices(day),
+        'issuance': issuance,
         'drs': [
             {'id': u.id, 'code': u.profile.dr_code, 'name': u.first_name or u.username}
             for u in _drs()
@@ -111,8 +136,7 @@ def save_day(day, grid, user):
     columns left out are unchanged. Returns a short summary.
     """
     skus = {s.bizom_name or s.name: s for s in SKU.objects.all()}
-    retail_channel = Channel.objects.filter(
-        channel_type=Channel.TYPE_DD, filer_status=Channel.NON_FILER).order_by('id').first()
+    retail_channel = _retail_channel()
     hq = Warehouse.objects.filter(is_head_office=True).first()
     changed_rows = 0
     drs_touched = 0
@@ -190,6 +214,33 @@ def save_day(day, grid, user):
         _post_value_delta(dr, day, q2(value_delta), q2(cost_delta), reference, user)
 
     return {'rows_changed': changed_rows, 'drs_updated': drs_touched}
+
+
+@transaction.atomic
+def save_issuance(day, values, user):
+    """
+    Apply the ISSUANCE / RETURN sheet: ``values`` is
+    {dr_id: {column_key: {"issued": M, "returned": M}}}; either side may be
+    left out to keep what was saved. Each DR's sale (issued - returned) is
+    then saved as their retail sale for the day, so stock, accounts and
+    commission follow exactly as for the plain sales entry.
+    """
+    retail = {}
+    for dr_id, columns in values.items():
+        dr = User.objects.get(pk=int(dr_id), groups__name=settings.ROLE_DR)
+        for key, sides in columns.items():
+            if key not in COLUMN_BY_KEY:
+                continue
+            row, _ = DRIssuance.objects.get_or_create(date=day, dr=dr, column=key)
+            if 'issued' in sides:
+                row.issued_m = q3(sides['issued'] or 0)
+            if 'returned' in sides:
+                row.returned_m = q3(sides['returned'] or 0)
+            row.updated_by = user
+            row.save()
+            retail.setdefault(str(dr.id), {ActualSale.BUCKET_RETAIL: {}})
+            retail[str(dr.id)][ActualSale.BUCKET_RETAIL][key] = str(row.sale_m)
+    return save_day(day, retail, user)
 
 
 def _post_value_delta(dr, day, value, cost, reference, user):

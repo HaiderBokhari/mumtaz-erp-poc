@@ -397,6 +397,37 @@ class ActualSale(models.Model):
         return self.quantity_m * self.unit_price
 
 
+class DRIssuance(models.Model):
+    """
+    What the KPO issued to a DR in the morning and what came back in the
+    evening, per sheet column, in M's — the distributor's ISSUANCE / RETURN
+    rows (team request 23 Nov 2026: "Hamza puts brand-wise issuance and
+    return and gets the sales and its amount"). Sale = issued - returned,
+    and it is saved into the actual book as that DR's retail sale for the day
+    (see distribution.actual_entry.save_issuance).
+    """
+
+    date = models.DateField(db_index=True)
+    dr = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='issuances')
+    column = models.CharField(max_length=10, help_text='Sheet column key, see actual_entry.SHEET_COLUMNS.')
+    issued_m = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    returned_m = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['date', 'dr', 'column']
+        ordering = ['-date', 'dr', 'column']
+
+    def __str__(self):
+        return f'{self.date} {self.dr} {self.column}: {self.issued_m} - {self.returned_m}'
+
+    @property
+    def sale_m(self):
+        return self.issued_m - self.returned_m
+
+
 class DRSettlement(models.Model):
     """
     A DR's end-of-day cash settlement, laid out exactly like Mumtaz & Co's

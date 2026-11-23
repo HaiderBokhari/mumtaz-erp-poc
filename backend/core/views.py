@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from distribution.models import ActualSale, DRSettlement, SalesOrder, Shop
 
 from .client_bundle import BundleLoader
+from .client_updates import UpdateApplier
 
 # Shared by all gunicorn workers in the container, so any worker can report progress.
 STATUS_FILE = Path('/tmp/client_bundle_status.json')
@@ -30,6 +31,10 @@ def _load_in_background(bundle):
         _write_status(state='running', log=log)
 
     try:
+        if bundle.get('kind') == 'updates':
+            result = UpdateApplier(bundle, log=step).run()
+            _write_status(state='done', log=log, result=result)
+            return
         BundleLoader(bundle, log=step).run()
         _write_status(
             state='done', log=log, shops=Shop.objects.count(), bizom_orders=SalesOrder.objects.count(),
@@ -45,7 +50,8 @@ class ClientBundleUploadView(APIView):
     """
     Owner-only: load a bundle built by ``build_client_bundle`` into this
     deployment. Real client data never goes through git (the repo is
-    public), so this is how a hosted instance gets it. Resets business data.
+    public), so this is how a hosted instance gets it. A full bundle resets
+    business data; an updates file (``build_client_updates``) only adds to it.
 
     POST starts the load in the background (small hosts take minutes, longer
     than a request may run); GET reports progress.

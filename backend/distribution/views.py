@@ -12,7 +12,7 @@ from accounts.permissions import RolePermission
 from warehouses.models import StockLedgerEntry
 
 from .imports import TEMPLATE_COLUMNS, import_ptc_sales_file
-from .actual_entry import day_grid, save_day
+from .actual_entry import day_grid, save_day, save_issuance
 from .models import ActualSale, DRSettlement, PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
 from .serializers import (
     DRSettlementSerializer, PaymentReceiptSerializer, SalesOrderSerializer, SalesReturnSerializer,
@@ -43,7 +43,8 @@ class ActualSaleViewSet(viewsets.ReadOnlyModelViewSet):
     """
     The actual book (US-19). ``day/`` is the daily sales entry: GET the
     sheet for ?date=, POST {date, values} to save it — same layout as the
-    distributor's ACTUAL SALE sheet (see distribution.actual_entry).
+    distributor's ACTUAL SALE sheet — or POST {date, issuance} to save their
+    ISSUANCE / RETURN rows instead (see distribution.actual_entry).
     """
     queryset = ActualSale.objects.select_related('dr', 'sku').all()
     permission_classes = [RolePermission]
@@ -68,9 +69,11 @@ class ActualSaleViewSet(viewsets.ReadOnlyModelViewSet):
         except ValueError:
             return Response({'detail': 'date must be YYYY-MM-DD'}, status=400)
         if request.method == 'POST':
-            values = request.data.get('values') or {}
             try:
-                summary = save_day(day, values, request.user)
+                if 'issuance' in request.data:
+                    summary = save_issuance(day, request.data.get('issuance') or {}, request.user)
+                else:
+                    summary = save_day(day, request.data.get('values') or {}, request.user)
             except (KeyError, ValueError, ArithmeticError) as exc:
                 return Response({'detail': f'Could not save: {exc}'}, status=400)
             return Response({**day_grid(day), 'saved': summary})

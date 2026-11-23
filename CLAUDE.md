@@ -114,6 +114,17 @@ seeds what the files lack (opening stock, weekly PTC POs, cash/bank split of
 settlements, expenses, targets) — those rows are labelled "seeded".
 `seed_demo_data` skips demo shops/SKUs/sales once client data is present.
 
+Follow-up answers and files (inactive DRs, renames, monthly targets, real
+expenses) go through `build_client_updates` → `client_data/updates.json.gz`
+→ `apply_client_updates <file>` (or the same upload endpoint). This path
+**never resets anything** and is idempotent, so use it on a live instance
+where staff are already entering data; re-apply it after any full bundle load.
+
+Daily sales entry (`distribution/actual_entry.py`) has two input modes: the
+ACTUAL SALE sheet (retail/scattered by column), and the KPO's ISSUANCE /
+RETURN rows (`DRIssuance`), where sale = issued − returned is saved as the
+DR's retail sale. Amounts use the BIZOM retail (DD non-filer) price list.
+
 ## What's fully built vs. stubbed
 
 **Fully built** (models + API + Django admin, most with a frontend page):
