@@ -234,8 +234,9 @@ class CompanyVsActualView(APIView):
             for code, first in UserProfile.objects.filter(dr_code__in=[k for k in rows if k]).values_list(
                     'dr_code', 'user__first_name'):
                 labels[code] = first
-            if None in rows:
-                labels[None] = 'No FSO assigned yet'
+            for key in rows:
+                if not key:  # no supervisor, or the generic demo FSO with no code
+                    labels[key] = 'No FSO assigned yet'
 
         out = []
         totals = defaultdict(lambda: D0)
