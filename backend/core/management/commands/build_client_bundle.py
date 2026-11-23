@@ -25,24 +25,12 @@ from collections import defaultdict
 
 from django.core.management.base import BaseCommand, CommandError
 
-# Columns of the distributor's ACTUAL SALE sheet -> BIZOM SKU name. The sheet
-# tracks brands, not every variant; where it is ambiguous the mapping is our
-# best reading and is listed in the client-questions doc to confirm.
-ACTUAL_SHEET_COLUMNS = [
-    'Benson & Hedges 20HL - New',   # "B&H L" (assumed: no separate B&H Lights SKU in BIZOM)
-    'Benson & Hedges 20HL - New',   # "B&H"
-    'Dunhill Lights 20HL',          # "DHL"
-    'Dunhill Switch 20HL',          # "DH SWITCH"
-    'Gold Leaf Classic 20HL',       # "JPGL"
-    'Dunhill Special 20HL',         # "JPGL Sp." (assumed)
-    'John Player 20HL Poly Pack',   # "JP"
-    'Capstan Filter 20HL',          # "Capstan Filter"
-    'VELO*',                        # "VELO": all variants; the loader splits it by that day's BIZOM Velo mix
-    'Gold Flake by Rothmans 20HL',  # "Gold Flake"
-    'Capstan by Pall Mall 20HL',    # "CbPMO"
-    'Capstan Select 20HL',          # "CI" / "INT" / "PM": monthly volume matches BIZOM Capstan Select, not International
-    'Embassy Filter 20HL',          # "Embassy Filer"
-]
+from distribution.actual_entry import SHEET_COLUMNS
+
+# Columns of the distributor's ACTUAL SALE sheet, left to right, as sheet
+# column keys (see distribution.actual_entry.SHEET_COLUMNS for what each
+# covers); the loader splits multi-SKU columns by that day's BIZOM mix.
+ACTUAL_SHEET_COLUMNS = [c['key'] for c in SHEET_COLUMNS]
 
 # BIZOM SKU name fragments -> (brand, variant) for the catalogue.
 BRAND_RULES = [
@@ -55,6 +43,8 @@ BRAND_RULES = [
 PTC_RATE_ALIASES = {
     # FMC AND NC.xlsx spells a few names differently from BIZOM.
     'cbpm elite': 'cbpmo ellite',
+    # Limited-edition pack of CbPM, same rate (distributor, 17 Nov 2026).
+    'capstan by pall mall q2 lep 20hl': 'capstan by pall mall 20hl',
 }
 
 
@@ -284,10 +274,11 @@ class Command(BaseCommand):
                  [[sku_index[s], round(l[0], 4), round(l[1], 2), round(l[2], 2)] for s, l in o['lines'].items()]]
                 for o in orders.values()
             ],
-            # [date, dr_number, sku bizom name, bucket, M]
+            # [date, dr_number, sheet column key, bucket, M]
             'actual': [[d, n, s, b, round(m, 3)] for (d, n, s, b), m in sorted(actual.items())],
             'pay_grades': manual['pay_grades'],
             'sample_settlements': manual.get('sample_settlements', []),
+            'fsos': manual.get('fsos', {}),
         }
         os.makedirs(os.path.dirname(os.path.abspath(opts['out'])), exist_ok=True)
         with gzip.open(opts['out'], 'wt', encoding='utf-8') as fh:

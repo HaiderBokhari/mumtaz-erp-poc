@@ -4,10 +4,11 @@ import MonthPicker, { monthLabel } from '../components/MonthPicker'
 import type { ComparisonRow } from '../types'
 import { formatM, formatMoney } from '../utils/format'
 
-type Group = 'dr' | 'brand' | 'sku' | 'day' | 'madam'
+type Group = 'dr' | 'fso' | 'brand' | 'sku' | 'day' | 'madam'
 
 const TABS: { key: Group; label: string }[] = [
   { key: 'dr', label: 'By DR' },
+  { key: 'fso', label: 'By FSO' },
   { key: 'brand', label: 'By brand' },
   { key: 'sku', label: 'By SKU' },
   { key: 'day', label: 'By day' },
@@ -112,7 +113,7 @@ function gapClass(value: number) {
 
 function ComparisonTable({ data, group }: { data: ComparisonResponse; group: Group }) {
   const t = data.totals
-  const heading = { dr: 'DR', brand: 'Brand', sku: 'SKU', day: 'Date', madam: '' }[group]
+  const heading = { dr: 'DR', fso: 'FSO', brand: 'Brand', sku: 'SKU', day: 'Date', madam: '' }[group]
   const anyAssumed = data.rows.some((r) => r.assumed)
   return (
     <div className="card overflow-x-auto">

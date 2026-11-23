@@ -196,6 +196,7 @@ class CompanyVsActualView(APIView):
         'sku': ('sku__name', 'sku__name'),
         'day': ('sales_order__order_date', 'date'),
         'channel': ('sales_order__channel__channel_type', None),
+        'fso': ('sales_order__dr__profile__supervisor__dr_code', 'dr__profile__supervisor__dr_code'),
     }
 
     def get(self, request):
@@ -228,6 +229,14 @@ class CompanyVsActualView(APIView):
                     'profile__dr_code', 'first_name'):
                 labels[code] = first
 
+        if group == 'fso':
+            from accounts.models import UserProfile
+            for code, first in UserProfile.objects.filter(dr_code__in=[k for k in rows if k]).values_list(
+                    'dr_code', 'user__first_name'):
+                labels[code] = first
+            if None in rows:
+                labels[None] = 'No FSO assigned yet'
+
         out = []
         totals = defaultdict(lambda: D0)
         for key, vals in rows.items():
@@ -242,7 +251,7 @@ class CompanyVsActualView(APIView):
                 totals[field] += vals[field]
         totals['gap_m'] = totals['company_m'] - totals['actual_m']
         totals['gap_value'] = totals['company_value'] - totals['actual_value']
-        sort_key = (lambda r: r['key']) if group in ('day', 'dr') else (lambda r: -r['company_value'])
+        sort_key = (lambda r: r['key']) if group in ('day', 'dr', 'fso') else (lambda r: -r['company_value'])
         return Response({
             'month': label, 'months': months, 'group': group,
             'rows': sorted(out, key=sort_key), 'totals': totals,

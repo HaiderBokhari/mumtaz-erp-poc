@@ -12,7 +12,8 @@ from accounts.permissions import RolePermission
 from warehouses.models import StockLedgerEntry
 
 from .imports import TEMPLATE_COLUMNS, import_ptc_sales_file
-from .models import DRSettlement, PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
+from .actual_entry import day_grid, save_day
+from .models import ActualSale, DRSettlement, PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
 from .serializers import (
     DRSettlementSerializer, PaymentReceiptSerializer, SalesOrderSerializer, SalesReturnSerializer,
     SalesTargetSerializer, ShopSerializer,
@@ -36,6 +37,44 @@ class ShopViewSet(viewsets.ModelViewSet):
     permission_classes = [RolePermission]
     filterset_fields = ['channel', 'status', 'dr', 'channel__channel_type', 'area_type']
     search_fields = ['name', 'locality', 'contact_phone', 'address', 'bizom_outlet_id', 'beat']
+
+
+class ActualSaleViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    The actual book (US-19). ``day/`` is the daily sales entry: GET the
+    sheet for ?date=, POST {date, values} to save it — same layout as the
+    distributor's ACTUAL SALE sheet (see distribution.actual_entry).
+    """
+    queryset = ActualSale.objects.select_related('dr', 'sku').all()
+    permission_classes = [RolePermission]
+    filterset_fields = ['date', 'dr', 'sku', 'bucket', 'source']
+
+    def get_serializer_class(self):
+        from rest_framework import serializers
+
+        class _Serializer(serializers.ModelSerializer):
+            class Meta:
+                model = ActualSale
+                fields = '__all__'
+        return _Serializer
+
+    @action(detail=False, methods=['get', 'post'])
+    def day(self, request):
+        import datetime
+
+        raw = request.data.get('date') if request.method == 'POST' else request.query_params.get('date')
+        try:
+            day = datetime.date.fromisoformat(raw or timezone.localdate().isoformat())
+        except ValueError:
+            return Response({'detail': 'date must be YYYY-MM-DD'}, status=400)
+        if request.method == 'POST':
+            values = request.data.get('values') or {}
+            try:
+                summary = save_day(day, values, request.user)
+            except (KeyError, ValueError, ArithmeticError) as exc:
+                return Response({'detail': f'Could not save: {exc}'}, status=400)
+            return Response({**day_grid(day), 'saved': summary})
+        return Response(day_grid(day))
 
 
 class DRSettlementViewSet(viewsets.ModelViewSet):

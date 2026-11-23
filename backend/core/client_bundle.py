@@ -36,6 +36,7 @@ from django.utils import timezone
 from accounting.models import ChartOfAccount, JournalEntry, JournalLine, Party, PartyBalance, Voucher
 from accounts.models import UserProfile
 from catalog.models import Brand, Channel, ChannelPrice, CostPriceHistory, SKU
+from distribution.actual_entry import COLUMN_BY_KEY, column_matches, default_sku_name
 from distribution.models import (
     ActualSale, DRSettlement, PaymentReceipt, SalesOrder, SalesOrderLine, SalesReturn,
     SalesTarget, Shop, dr_party_for,
@@ -134,6 +135,7 @@ class BundleLoader:
             # collection, which chokes on ~200k order lines) is safe.
             model.objects.all()._raw_delete(model.objects.db)
         User.objects.filter(groups__name=settings.ROLE_DR).delete()
+        User.objects.filter(groups__name=settings.ROLE_FSO, profile__dr_code__startswith='SGD_').delete()
 
     def _base(self):
         from core.management.commands.seed_demo_data import Command as SeedCommand
@@ -241,8 +243,28 @@ class BundleLoader:
             )
             self.drs[code] = user
             self.dr_meta[code] = dr
+        self._fsos(grades)
         self.code_by_number = {d['number']: d['code'] for d in self.b['drs'] if d.get('number')}
         self.dr_by_number = {n: self.drs[c] for n, c in self.code_by_number.items()}
+
+    def _fsos(self, grades):
+        """FSO -> DR supervision as given by the distributor (17 Nov 2026)."""
+        fso_group = self.groups[settings.ROLE_FSO]
+        for fso_code, dr_codes in self.b.get('fsos', {}).items():
+            short = fso_code.split('_')[-1]
+            user = User.objects.create(username=fso_code.lower(), first_name=f'FSO {short[-2:]}', last_name='')
+            user.set_unusable_password()
+            user.save(update_fields=['password'])
+            user.groups.add(fso_group)
+            user.profile, _ = UserProfile.objects.update_or_create(
+                user=user, defaults={'dr_code': fso_code, 'warehouse': self.hq},
+            )
+            Employee.objects.create(
+                employee_number=fso_code, full_name=user.first_name, cnic=f'PENDING-{short}',
+                role='Field Sales Officer', warehouse=self.hq, user=user, pay_grade=grades.get('FSO'),
+                monthly_salary=grades['FSO'].fixed if 'FSO' in grades else 0, hire_date=datetime.date(2025, 1, 1),
+            )
+            UserProfile.objects.filter(dr_code__in=dr_codes).update(supervisor=user.profile)
 
     def _shops(self):
         self.log('Loading outlets...')
@@ -312,16 +334,14 @@ class BundleLoader:
     def _actual_book(self):
         self.log('Loading actual sales (actual book)...')
         actual = defaultdict(lambda: D0)  # (date, dr code, sku name, bucket) -> M
-        for date, number, sku_name, bucket, m in self.b['actual']:
+        for date, number, column_key, bucket, m in self.b['actual']:
+            sku_name = column_key
             code = self.code_by_number.get(number)
             if not code:
                 continue
             m = Decimal(str(m))
-            if sku_name == 'VELO*':
-                for velo_name, share in self._velo_mix(date, code):
-                    actual[(date, code, velo_name, bucket)] += m * share
-            else:
-                actual[(date, code, sku_name, bucket)] += m
+            for name, share in self._column_mix(date, code, sku_name):
+                actual[(date, code, name, bucket)] += m * share
         on_sheet = defaultdict(lambda: D0)
         for (date, code, _s, _b), m in actual.items():
             on_sheet[code] += m
@@ -350,18 +370,24 @@ class BundleLoader:
         ActualSale.objects.bulk_create(rows, batch_size=2000)
         self.log(f'  {len(rows)} actual-sale rows; BIZOM assumed actual for: {", ".join(sorted(self.assumed_drs))}')
 
-    def _velo_mix(self, date, code):
-        """The actual sheet has one VELO column; split it like that DR's BIZOM Velo sales that day."""
-        if not hasattr(self, '_velo_index'):
+    def _column_mix(self, date, code, column_key):
+        """
+        Split one actual-sheet column (e.g. "Velo", "CI (+ Select)") across
+        its SKUs the way that DR's BIZOM sales split that day; single-SKU
+        columns pass straight through.
+        """
+        column = COLUMN_BY_KEY[column_key]
+        if not hasattr(self, '_bizom_by_day_dr'):
             # Built once: scanning every BIZOM row per call is far too slow on a small server.
-            self._velo_index = defaultdict(list)
+            self._bizom_by_day_dr = defaultdict(list)
             for (d, c, name), (m, _v, _a) in self.bizom.items():
-                if m > 0 and self.skus[name].category == SKU.CATEGORY_NC:
-                    self._velo_index[(d, c)].append((name, m))
-        mix = self._velo_index.get((date, code), [])
+                if m > 0:
+                    self._bizom_by_day_dr[(d, c)].append((name, m))
+        mix = [(name, m) for name, m in self._bizom_by_day_dr.get((date, code), [])
+               if column_matches(column, name, self.skus[name].category)]
         total = sum((m for _n, m in mix), D0)
         if not total:
-            return [('VELO Polar Mint 10MG', Decimal('1'))]
+            return [(default_sku_name(column), Decimal('1'))]
         return [(name, m / total) for name, m in mix]
 
     # -- stock ---------------------------------------------------------------------

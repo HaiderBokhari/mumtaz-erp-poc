@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: '📊' },
   { to: '/company-vs-actual', label: 'Company vs Actual', icon: '⚖️' },
+  { to: '/sales-entry', label: 'Daily Sales Entry', icon: '✍️' },
   { to: '/settlements', label: 'DR Cash Settlement', icon: '💵' },
   { to: '/dr-payout', label: 'DR Salary & Commission', icon: '🧮' },
   { to: '/catalog', label: 'Brands & SKUs', icon: '📦' },
