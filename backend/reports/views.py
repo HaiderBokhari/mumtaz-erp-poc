@@ -2,7 +2,7 @@ import datetime
 from collections import defaultdict
 from decimal import Decimal
 
-from django.db.models import DecimalField, F, Max, Sum, Value
+from django.db.models import Case, CharField, DecimalField, F, Max, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
@@ -195,7 +195,13 @@ class CompanyVsActualView(APIView):
         'brand': ('sku__brand__name', 'sku__brand__name'),
         'sku': ('sku__name', 'sku__name'),
         'day': ('sales_order__order_date', 'date'),
-        'channel': ('sales_order__channel__channel_type', None),
+        # Shop-sale and mandi devices count as their own channel on both books.
+        'channel': (
+            Case(When(sales_order__dr__profile__sales_channel__in=['SHOP', 'MANDI'],
+                      then=F('sales_order__dr__profile__sales_channel')),
+                 default=F('sales_order__channel__channel_type'), output_field=CharField()),
+            'channel_type',
+        ),
         'fso': ('sales_order__dr__profile__supervisor__dr_code', 'dr__profile__supervisor__dr_code'),
     }
 
@@ -207,7 +213,8 @@ class CompanyVsActualView(APIView):
         company_key, actual_key = self.GROUPS[group]
         rows = defaultdict(lambda: {'company_m': D0, 'company_value': D0, 'actual_m': D0, 'actual_value': D0,
                                     'assumed': False})
-        for r in _company_lines(start, end).values(key=F(company_key)).annotate(
+        company_expr = F(company_key) if isinstance(company_key, str) else company_key
+        for r in _company_lines(start, end).values(key=company_expr).annotate(
                 m=_money_sum('quantity'), value=_money_sum(F('quantity') * F('unit_price'))):
             rows[r['key']]['company_m'] = r['m']
             rows[r['key']]['company_value'] = r['value']
@@ -228,6 +235,11 @@ class CompanyVsActualView(APIView):
             for code, first in User.objects.filter(profile__dr_code__in=list(rows)).values_list(
                     'profile__dr_code', 'first_name'):
                 labels[code] = first
+
+        if group == 'channel':
+            from distribution.channels import LABELS
+            for key in rows:
+                labels[key] = LABELS.get(key, key or 'Not tagged')
 
         if group == 'fso':
             from accounts.models import UserProfile
@@ -253,6 +265,9 @@ class CompanyVsActualView(APIView):
         totals['gap_m'] = totals['company_m'] - totals['actual_m']
         totals['gap_value'] = totals['company_value'] - totals['actual_value']
         sort_key = (lambda r: r['key']) if group in ('day', 'dr', 'fso') else (lambda r: -r['company_value'])
+        if group == 'channel':
+            from distribution.channels import ORDER
+            sort_key = lambda r: ORDER.index(r['key']) if r['key'] in ORDER else len(ORDER)  # noqa: E731
         return Response({
             'month': label, 'months': months, 'group': group,
             'rows': sorted(out, key=sort_key), 'totals': totals,

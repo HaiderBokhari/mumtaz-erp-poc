@@ -383,6 +383,10 @@ class ActualSale(models.Model):
     quantity_m = models.DecimalField(max_digits=14, decimal_places=3, help_text="Volume in M's (1,000 sticks).")
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, help_text='Price per M.')
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    channel_type = models.CharField(
+        max_length=10, blank=True, db_index=True,
+        help_text='DD / VDD / WS (UWS) / VWS (RWS) / MANDI / SHOP, from the DR and bucket (distribution.channels).',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

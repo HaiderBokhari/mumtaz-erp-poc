@@ -10,8 +10,13 @@ What it applies (team answers, 23 Nov 2026):
 - Renames, e.g. DR28 is the wholesale mandi device, not "Shop Sale".
 - Monthly DR targets from their "TARGET OCT AND NOV" sheet, matched to DRs
   by name (names the sheet spells differently are listed, not guessed).
+- Each DR's own sales channel (DD / VDD / MANDI / SHOP), and the channel
+  tag on actual-sale rows that have none yet.
 - One month of real expenses from their Expences sheet, replacing the
   seeded running costs (the seeded entries are reversed, not deleted).
+  Lines that are a family member's drawings rather than business costs go
+  to their own equity account (``expense_accounts``), one per person, and
+  lines posted before such a mapping existed are reclassified.
 
 Real client data never goes into git: ``build_client_updates`` reads their
 files into a git-ignored ``updates.json.gz`` which is applied with
@@ -28,7 +33,7 @@ from django.db import transaction
 
 from accounting.models import ChartOfAccount, JournalEntry, Party
 from catalog.models import Channel
-from distribution.models import SalesTarget
+from distribution.models import ActualSale, SalesTarget
 from hr.models import Employee
 
 D0 = Decimal('0')
@@ -118,6 +123,7 @@ class UpdateApplier:
     def run(self):
         self._inactive()
         self._renames()
+        self._channels()
         self._targets()
         self._expenses()
         self.log('Client updates applied.')
@@ -143,6 +149,22 @@ class UpdateApplier:
             Employee.objects.filter(user=user).update(full_name=name)
             Party.objects.filter(name=old_party).update(name=f'DR {code} - {name}')
             self.log(f'Renamed {code} to {name}')
+
+    def _channels(self):
+        from accounts.models import UserProfile
+        from distribution.channels import backfill_sale_channels
+
+        for profile in UserProfile.objects.filter(user__groups__name='Distribution Representative', sales_channel=''):
+            grade = getattr(Employee.objects.filter(user_id=profile.user_id).select_related('pay_grade').first(),
+                            'pay_grade', None)
+            profile.sales_channel = Channel.TYPE_VDD if grade and grade.name == 'VDD' else Channel.TYPE_DD
+            profile.save(update_fields=['sales_channel'])
+        for code, channel in self.u.get('dr_channels', {}).items():
+            UserProfile.objects.filter(dr_code=code).exclude(sales_channel=channel).update(sales_channel=channel)
+            ActualSale.objects.filter(dr__profile__dr_code=code).exclude(
+                channel_type=channel).filter(bucket='RETAIL').update(channel_type=channel)
+        n = backfill_sale_channels()
+        self.log(f'Channels: {len(self.u.get("dr_channels", {}))} DR overrides, {n} sale rows tagged')
 
     def _targets(self):
         targets = self.u.get('targets')
@@ -182,7 +204,9 @@ class UpdateApplier:
             return
         year, month = map(int, exp['month'].split('-'))
         reference = f'EXP-{year}{month:02d}'
+        special = self._expense_accounts()
         if JournalEntry.objects.filter(reference=reference).exists():
+            self._reclassify(reference, special)
             self.log(f'Expenses for {exp["month"]} already posted.')
             return
         # Their real figures replace the seeded estimates: reverse the seeded entries.
@@ -202,13 +226,13 @@ class UpdateApplier:
             if item in {norm(i) for i in PAYROLL_ITEMS}:
                 totals['payroll_skipped'] += amount
                 continue
-            drawings = item in {norm(i) for i in DRAWINGS_ITEMS}
-            account = ChartOfAccount.OWNER_EQUITY if drawings else ChartOfAccount.GENERAL_EXPENSE
+            drawings = item in special or item in {norm(i) for i in DRAWINGS_ITEMS}
+            account = special.get(item) or (ChartOfAccount.OWNER_EQUITY if drawings else ChartOfAccount.GENERAL_EXPENSE)
             totals['drawings' if drawings else 'expense'] += amount
             JournalEntry.create_posted(
                 source=JournalEntry.SOURCE_VOUCHER,
                 date=datetime.date(year, month, min(row['day'], last_day)), reference=reference,
-                narration=f"{row['section']}: {row['item']}" + (' (owner drawings)' if drawings else ''),
+                narration=self._narration(row, drawings),
                 created_by=self.owner,
                 lines=[{'account': account, 'debit': amount}, {'account': ChartOfAccount.BANK, 'credit': amount}],
             )
@@ -216,3 +240,43 @@ class UpdateApplier:
                  f'Rs {totals["drawings"]:,.0f} owner drawings; staff salary Rs {totals["payroll_skipped"]:,.0f} '
                  'left to payroll.')
         self.result['expenses'] = {k: str(v) for k, v in totals.items()}
+
+    def _narration(self, row, drawings):
+        label = self.u.get('expense_labels', {}).get(row['item'])
+        text = f"{row['section']}: {row['item']}" + (f' - {label}' if label else '')
+        return text + (' (drawings)' if drawings else '')
+
+    def _expense_accounts(self):
+        """Equity accounts for drawings lines, one per person: {normalised item: account}."""
+        out = {}
+        equity = ChartOfAccount.get(ChartOfAccount.OWNER_EQUITY)
+        for spec in self.u.get('expense_accounts', []):
+            account, _ = ChartOfAccount.objects.get_or_create(
+                code=spec['code'],
+                defaults={'name': spec['name'], 'account_type': equity.account_type, 'group': equity.group},
+            )
+            for item in spec['items']:
+                out[norm(item)] = account
+        return out
+
+    def _reclassify(self, reference, special):
+        """Move already-posted lines of a mapped item to its own account (append-only)."""
+        moved = 0
+        for entry in JournalEntry.objects.filter(reference=reference).prefetch_related('lines__account'):
+            item = norm(entry.narration.split(': ', 1)[-1].split(' - ')[0].replace(' (drawings)', '').replace(
+                ' (owner drawings)', ''))
+            target = special.get(item)
+            debit = next((line for line in entry.lines.all() if line.debit), None)
+            if target is None or debit is None or debit.account_id == target.id:
+                continue
+            marker = f'Reclass of entry #{entry.id}'
+            if JournalEntry.objects.filter(reference=f'{reference}-RECLASS', narration__startswith=marker).exists():
+                continue
+            JournalEntry.create_posted(
+                source=JournalEntry.SOURCE_VOUCHER, date=entry.date, reference=f'{reference}-RECLASS',
+                narration=f'{marker}: {entry.narration} -> {target.name}', created_by=self.owner,
+                lines=[{'account': target, 'debit': debit.debit}, {'account': debit.account, 'credit': debit.debit}],
+            )
+            moved += 1
+        if moved:
+            self.log(f'Reclassified {moved} expense lines to their own accounts')

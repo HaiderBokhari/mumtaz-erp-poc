@@ -12,6 +12,7 @@ Select (same commission), and CbPM Q2 LEP is counted under CbPMO.
 Saving is append-only like the rest of the ledger: changes to a day post
 delta stock movements and a delta journal entry, never edits to old ones.
 """
+import re
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -23,6 +24,7 @@ from accounting.models import ChartOfAccount, JournalEntry
 from catalog.models import SKU, Channel, ChannelPrice
 from warehouses.models import StockLedgerEntry, Warehouse
 
+from . import channels
 from .models import ActualSale, DRIssuance, dr_party_for
 
 D0 = Decimal('0')
@@ -57,11 +59,43 @@ def column_matches(column, name, category):
     return category == SKU.CATEGORY_NC and not is_nano
 
 
-def column_for_sku(sku):
-    for column in SHEET_COLUMNS:
+def column_for_sku(sku, columns=SHEET_COLUMNS):
+    for column in columns:
         if column_matches(column, sku.bizom_name or sku.name, sku.category):
             return column['key']
     return None
+
+
+def _velo_mg(name):
+    match = re.search(r'(\d+)\s*mg', name, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _velo_label(name):
+    label = re.sub(r'^velo\s+', '', name, flags=re.IGNORECASE)
+    label = re.sub(r'\s*\d+\s*mg', '', label, flags=re.IGNORECASE)
+    label = re.sub(r'\s*-\s*nano\s*-\s*15s', ' Nano', label, flags=re.IGNORECASE)
+    label = re.sub(r'music edition', 'ME', label, flags=re.IGNORECASE)
+    return ' '.join(w if w.isupper() else w.capitalize() for w in label.split())
+
+
+def entry_columns():
+    """
+    Columns of the daily entry screen: the sheet's cigarette (FMC) brands,
+    then every Velo (NC) SKU on its own, grouped by strength (team request
+    24 Nov 2026: "we need all the SKUs of 6, 10, 14 and 17 mg").
+    """
+    columns = [{**c, 'section': 'FMC', 'group': ''} for c in SHEET_COLUMNS if 'skus' in c]
+    velo = sorted(
+        SKU.objects.filter(category=SKU.CATEGORY_NC),
+        key=lambda s: (_velo_mg(s.bizom_name or s.name), 'nano' not in (s.bizom_name or s.name).lower(),
+                       'music' in (s.bizom_name or s.name).lower(), _velo_label(s.bizom_name or s.name)),
+    )
+    for sku in velo:
+        name = sku.bizom_name or sku.name
+        columns.append({'key': f'V{sku.id}', 'label': _velo_label(name), 'skus': [name],
+                        'section': 'NC', 'group': f'{_velo_mg(name)} mg'})
+    return columns
 
 
 def default_sku_name(column):
@@ -84,30 +118,29 @@ def _drs():
     )
 
 
-def _retail_channel():
-    return Channel.objects.filter(
-        channel_type=Channel.TYPE_DD, filer_status=Channel.NON_FILER).order_by('id').first()
-
-
-def column_prices(day):
-    """Rs per M for each sheet column: the BIZOM retail (DD, non-filer) price of its main SKU."""
-    channel = _retail_channel()
+def _price_lists(day, columns):
+    """Rs per M per price channel and column, from the BIZOM (non-filer) price lists."""
     skus = {s.bizom_name or s.name: s for s in SKU.objects.all()}
-    prices = {}
-    for column in SHEET_COLUMNS:
-        sku = skus.get(default_sku_name(column))
-        if sku is None:
+    sku_ids = {c['key']: skus[default_sku_name(c)].id for c in columns if default_sku_name(c) in skus}
+    out = {}
+    for channel in Channel.objects.filter(filer_status=Channel.NON_FILER).order_by('id'):
+        if channel.channel_type in out:
             continue
-        price = (ChannelPrice.current_price(channel.id, sku.id, day) if channel else None) or sku.current_cost_price
-        prices[column['key']] = str(price)
-    return prices
+        latest = {}
+        for sku_id, price in (ChannelPrice.objects.filter(channel=channel, effective_from__lte=day)
+                              .order_by('sku_id', 'effective_from').values_list('sku_id', 'price')):
+            latest[sku_id] = price
+        out[channel.channel_type] = {key: str(latest[sid]) for key, sid in sku_ids.items() if sid in latest}
+    out[channels.SHOP] = out.get(Channel.TYPE_DD, {})
+    return out
 
 
 def day_grid(day):
     """The sheet for one day: DR rows x column values, per bucket."""
+    columns = entry_columns()
     values = defaultdict(lambda: {b: defaultdict(lambda: D0) for b in BUCKETS})
     for sale in ActualSale.objects.filter(date=day).select_related('sku'):
-        key = column_for_sku(sale.sku)
+        key = column_for_sku(sale.sku, columns)
         if key:
             values[sale.dr_id][sale.bucket][key] += sale.quantity_m
     issuance = defaultdict(dict)
@@ -115,11 +148,13 @@ def day_grid(day):
         issuance[str(row.dr_id)][row.column] = [str(row.issued_m), str(row.returned_m)]
     return {
         'date': day.isoformat(),
-        'columns': [{'key': c['key'], 'label': c['label']} for c in SHEET_COLUMNS],
-        'prices': column_prices(day),
+        'columns': [{k: c[k] for k in ('key', 'label', 'section', 'group')} for c in columns],
+        'prices': _price_lists(day, columns),
+        'channels': [{'key': k, 'label': channels.LABELS[k]} for k in channels.ORDER],
         'issuance': issuance,
         'drs': [
-            {'id': u.id, 'code': u.profile.dr_code, 'name': u.first_name or u.username}
+            {'id': u.id, 'code': u.profile.dr_code, 'name': u.first_name or u.username,
+             'channel': channels.dr_channel(u)}
             for u in _drs()
         ],
         'values': {
@@ -136,7 +171,9 @@ def save_day(day, grid, user):
     columns left out are unchanged. Returns a short summary.
     """
     skus = {s.bizom_name or s.name: s for s in SKU.objects.all()}
-    retail_channel = _retail_channel()
+    columns = entry_columns()
+    by_key = {**COLUMN_BY_KEY, **{c['key']: c for c in columns}}
+    price_channels = {c.channel_type: c for c in Channel.objects.filter(filer_status=Channel.NON_FILER).order_by('-id')}
     hq = Warehouse.objects.filter(is_head_office=True).first()
     changed_rows = 0
     drs_touched = 0
@@ -144,20 +181,23 @@ def save_day(day, grid, user):
     for dr_id, buckets in grid.items():
         dr = User.objects.select_related('profile').get(pk=int(dr_id), groups__name=settings.ROLE_DR)
         warehouse = dr.profile.warehouse or hq
+        dr_ch = channels.dr_channel(dr)
         stock_delta = defaultdict(lambda: D0)   # sku_id -> M
         value_delta = cost_delta = D0
         for bucket, columns in buckets.items():
             if bucket not in BUCKETS:
                 continue
+            channel_type = channels.sale_channel(dr_ch, bucket)
+            price_channel = price_channels.get(channels.price_channel_type(channel_type))
             existing = {
                 row.sku_id: row for row in ActualSale.objects.filter(date=day, dr=dr, bucket=bucket).select_related('sku')
             }
             for key, raw in columns.items():
-                column = COLUMN_BY_KEY.get(key)
+                column = by_key.get(key)
                 if column is None:
                     continue
                 target = q3(raw or 0)
-                rows = [r for r in existing.values() if column_for_sku(r.sku) == key]
+                rows = [r for r in existing.values() if column_matches(column, r.sku.bizom_name or r.sku.name, r.sku.category)]
                 current = sum((r.quantity_m for r in rows), D0)
                 if target == current:
                     continue
@@ -184,11 +224,12 @@ def save_day(day, grid, user):
                             row.quantity_m = qty
                             row.save(update_fields=['quantity_m'])
                     elif qty != 0:
-                        price = (ChannelPrice.current_price(retail_channel.id, sku.id, day)
-                                 if retail_channel else None) or sku.current_cost_price
+                        price = (ChannelPrice.current_price(price_channel.id, sku.id, day)
+                                 if price_channel else None) or sku.current_cost_price
                         ActualSale.objects.create(
                             date=day, dr=dr, warehouse=warehouse, sku=sku, bucket=bucket,
                             quantity_m=qty, unit_price=price, source=ActualSale.SOURCE_MANUAL,
+                            channel_type=channel_type,
                         )
                     else:
                         continue
@@ -226,10 +267,11 @@ def save_issuance(day, values, user):
     commission follow exactly as for the plain sales entry.
     """
     retail = {}
-    for dr_id, columns in values.items():
+    known = {c['key'] for c in entry_columns()}
+    for dr_id, cols in values.items():
         dr = User.objects.get(pk=int(dr_id), groups__name=settings.ROLE_DR)
-        for key, sides in columns.items():
-            if key not in COLUMN_BY_KEY:
+        for key, sides in cols.items():
+            if key not in known:
                 continue
             row, _ = DRIssuance.objects.get_or_create(date=day, dr=dr, column=key)
             if 'issued' in sides:

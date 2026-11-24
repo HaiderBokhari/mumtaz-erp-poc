@@ -33,6 +33,9 @@ class Command(BaseCommand):
             'inactive_drs': manual.get('inactive_drs', []),
             'dr_renames': manual.get('dr_renames', {}),
             'target_aliases': manual.get('target_aliases', {}),
+            'dr_channels': manual.get('dr_channels', {}),
+            'expense_accounts': manual.get('expense_accounts', []),
+            'expense_labels': manual.get('expense_labels', {}),
         }
         for spec in manual.get('targets', []):
             rows = read_targets(os.path.join(opts['source'], spec['file']))

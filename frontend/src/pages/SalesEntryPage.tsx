@@ -4,15 +4,20 @@ import { formatMoney, formatNumber } from '../utils/format'
 
 type Bucket = 'RETAIL' | 'SCATTERED'
 type Mode = 'ISSUANCE' | Bucket
+type Section = 'FMC' | 'NC'
 type Grid = Record<string, Record<Bucket, Record<string, string>>>
 type Side = 'issued' | 'returned'
 type IssGrid = Record<string, Record<string, Record<Side, string>>>
 
+interface Column { key: string; label: string; section: Section; group: string }
+interface DR { id: number; code: string; name: string; channel: string }
+
 interface DayResponse {
   date: string
-  columns: { key: string; label: string }[]
-  prices: Record<string, string>
-  drs: { id: number; code: string; name: string }[]
+  columns: Column[]
+  prices: Record<string, Record<string, string>>   // channel type -> column -> Rs per M
+  channels: { key: string; label: string }[]
+  drs: DR[]
   values: Record<string, Partial<Record<Bucket, Record<string, string>>>>
   issuance: Record<string, Record<string, [string, string]>>
   saved?: { rows_changed: number; drs_updated: number }
@@ -23,12 +28,20 @@ const MODE_LABELS: Record<Mode, string> = {
   RETAIL: 'Sold in retail',
   SCATTERED: 'Sold in scattered wholesale',
 }
+const SECTION_LABELS: Record<Section, string> = { FMC: 'Cigarettes (FMC)', NC: 'Velo (NC)' }
+const CHANNEL_SHORT: Record<string, string> = { DD: 'DD', VDD: 'VDD', WS: 'UWS', VWS: 'RWS', MANDI: 'Mandi', SHOP: 'Shop sale' }
 const BUCKETS: Bucket[] = ['RETAIL', 'SCATTERED']
 const SIDES: Side[] = ['issued', 'returned']
 
 const today = () => new Date().toISOString().slice(0, 10)
 const num = (v: string | undefined) => Number(v || 0)
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v))
+
+/** What a DR's sale counts as: their own channel, or UWS/RWS for scattered wholesale by a DD/VDD DR. */
+function saleChannel(dr: DR, bucket: Bucket) {
+  if (bucket === 'SCATTERED') return ({ DD: 'WS', VDD: 'VWS' } as Record<string, string>)[dr.channel] ?? dr.channel
+  return dr.channel
+}
 
 function toGrid(data: DayResponse): Grid {
   const grid: Grid = {}
@@ -67,6 +80,7 @@ const cellClass = (changed: boolean) =>
 export default function SalesEntryPage() {
   const [date, setDate] = useState(today())
   const [mode, setMode] = useState<Mode>('ISSUANCE')
+  const [section, setSection] = useState<Section>('FMC')
   const [data, setData] = useState<DayResponse | null>(null)
   const [grid, setGrid] = useState<Grid>({})
   const [original, setOriginal] = useState<Grid>({})
@@ -169,9 +183,33 @@ export default function SalesEntryPage() {
     }
   }
 
+  // Channel-wise sale for the day, including edits not saved yet. A DR's
+  // retail sale comes from issuance - return where that was entered.
+  const byChannel = useMemo(() => {
+    const out: Record<string, { m: number; rs: number }> = {}
+    if (!data) return out
+    for (const dr of data.drs) {
+      for (const c of data.columns) {
+        const sides = iss[dr.id]?.[c.key]
+        const fromIssuance = sides && (num(sides.issued) || num(sides.returned) || num(issOriginal[dr.id]?.[c.key]?.issued))
+        const retail = fromIssuance ? num(sides.issued) - num(sides.returned) : num(grid[dr.id]?.RETAIL?.[c.key])
+        for (const [bucket, m] of [['RETAIL', retail], ['SCATTERED', num(grid[dr.id]?.SCATTERED?.[c.key])]] as [Bucket, number][]) {
+          if (!m) continue
+          const ch = saleChannel(dr, bucket)
+          out[ch] = out[ch] ?? { m: 0, rs: 0 }
+          out[ch].m += m
+          out[ch].rs += m * num(data.prices[ch]?.[c.key])
+        }
+      }
+    }
+    return out
+  }, [data, grid, iss, issOriginal])
+
   if (!data) return <div className="text-slate-500">Loading...</div>
 
-  const price = (key: string) => num(data.prices[key])
+  const cols = data.columns.filter((c) => c.section === section)
+  const price = (dr: DR, bucket: Bucket, key: string) => num(data.prices[saleChannel(dr, bucket)]?.[key])
+  const dayTotal = Object.values(byChannel).reduce((a, v) => ({ m: a.m + v.m, rs: a.rs + v.rs }), { m: 0, rs: 0 })
 
   return (
     <div className="space-y-4">
@@ -180,8 +218,8 @@ export default function SalesEntryPage() {
           <h1 className="text-xl font-semibold">Daily Sales Entry</h1>
           <p className="text-sm text-slate-500 max-w-3xl">
             Enter each DR&rsquo;s morning issuance and evening return by brand, in M. Sale = issued &minus; returned, and the
-            amount uses the BIZOM retail price list. Saving updates godown stock, the DR&rsquo;s account and commission
-            straight away. You can come back and correct a day; only the difference is posted.
+            amount uses the BIZOM price list for that DR&rsquo;s channel. Saving updates godown stock, the DR&rsquo;s account
+            and commission straight away. You can come back and correct a day; only the difference is posted.
           </p>
         </div>
         <div className="flex items-center gap-2 no-print">
@@ -195,79 +233,141 @@ export default function SalesEntryPage() {
       {message && <div className="rounded-lg bg-emerald-50 text-emerald-800 text-sm px-3 py-2">{message}</div>}
       {error && <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
 
-      <div className="flex gap-1 border-b border-slate-200 no-print">
-        {(['ISSUANCE', ...BUCKETS] as Mode[]).map((m) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-4 py-2 text-sm -mb-px border-b-2 ${
-              mode === m ? 'border-brand-500 text-brand-600 font-medium' : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {MODE_LABELS[m]}
-          </button>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+        {data.channels.map((ch) => (
+          <div key={ch.key} className="card px-3 py-2">
+            <div className="text-xs text-slate-500">{ch.label}</div>
+            <div className="font-semibold">{formatNumber((byChannel[ch.key]?.m ?? 0).toFixed(2))} M</div>
+            <div className="text-xs text-slate-500">Rs {formatMoney(byChannel[ch.key]?.rs ?? 0)}</div>
+          </div>
         ))}
+        <div className="card px-3 py-2 bg-slate-50">
+          <div className="text-xs text-slate-500">Day total</div>
+          <div className="font-semibold">{formatNumber(dayTotal.m.toFixed(2))} M</div>
+          <div className="text-xs text-slate-500">Rs {formatMoney(dayTotal.rs)}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end justify-between gap-2 border-b border-slate-200 no-print">
+        <div className="flex gap-1">
+          {(['ISSUANCE', ...BUCKETS] as Mode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-2 text-sm -mb-px border-b-2 ${
+                mode === m ? 'border-brand-500 text-brand-600 font-medium' : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {MODE_LABELS[m]}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1 pb-1.5">
+          {(['FMC', 'NC'] as Section[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSection(s)}
+              className={`rounded-full px-3 py-1 text-xs border ${
+                section === s ? 'bg-brand-600 border-brand-600 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {SECTION_LABELS[s]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {mode === 'ISSUANCE' ? (
-        <IssuanceTable data={data} iss={iss} original={issOriginal} price={price} onChange={setIssCell} />
+        <IssuanceTable data={data} cols={cols} iss={iss} original={issOriginal} price={price} onChange={setIssCell} />
       ) : (
         <BucketTable
-          data={data} bucket={mode} grid={grid} original={original} price={price}
+          data={data} cols={cols} bucket={mode} grid={grid} original={original} price={price}
           onChange={(drId, key, value) => setCell(drId, mode, key, value)}
         />
       )}
 
       <p className="text-xs text-slate-500">
-        Issuance &amp; Return saves the sale as the DR&rsquo;s retail sale, so it also shows on the &ldquo;Sold in retail&rdquo;
-        tab. Column notes from your team: &ldquo;Velo Nano&rdquo; is the column headed B&amp;H on the sheet; &ldquo;CI&rdquo;
-        includes Capstan Select; CbPMO includes the Q2 LEP pack. Changed cells are highlighted until saved.
+        Totals and amounts in the table are for the {SECTION_LABELS[section]} columns; the channel boxes above cover
+        everything. Issuance &amp; Return saves the sale as the DR&rsquo;s retail sale, so it also shows on the &ldquo;Sold in
+        retail&rdquo; tab. Channels: each DR&rsquo;s retail sale counts for their own channel (DD, VDD, Mandi device, Shop sale
+        device for RTFs); scattered wholesale by a DD DR is UWS and by a VDD DR is RWS. &ldquo;CI&rdquo; includes Capstan
+        Select; CbPMO includes the Q2 LEP pack. Changed cells are highlighted until saved.
       </p>
     </div>
   )
 }
 
-function IssuanceTable({ data, iss, original, price, onChange }: {
+function GroupHeader({ cols, lead, trail }: { cols: Column[]; lead: number; trail: number }) {
+  if (!cols.some((c) => c.group)) return null
+  const groups: { label: string; span: number }[] = []
+  for (const c of cols) {
+    const last = groups[groups.length - 1]
+    if (last && last.label === c.group) last.span += 1
+    else groups.push({ label: c.group, span: 1 })
+  }
+  return (
+    <tr>
+      <th colSpan={lead} className="sticky left-0 z-10 bg-white" />
+      {groups.map((g, i) => (
+        <th key={i} colSpan={g.span} className="text-center border-l border-slate-200 bg-slate-50">{g.label}</th>
+      ))}
+      <th colSpan={trail} />
+    </tr>
+  )
+}
+
+function DRCell({ dr }: { dr: DR }) {
+  return (
+    <>
+      <div className="font-medium">{dr.name}</div>
+      <div className="text-xs text-slate-400">{dr.code.replace('SGD_SGD_', '')} · {CHANNEL_SHORT[dr.channel] ?? dr.channel}</div>
+    </>
+  )
+}
+
+function IssuanceTable({ data, cols, iss, original, price, onChange }: {
   data: DayResponse
+  cols: Column[]
   iss: IssGrid
   original: IssGrid
-  price: (key: string) => number
+  price: (dr: DR, bucket: Bucket, key: string) => number
   onChange: (drId: number, key: string, side: Side, value: string) => void
 }) {
   const sale = (drId: number, key: string) => num(iss[drId]?.[key]?.issued) - num(iss[drId]?.[key]?.returned)
   const totals = { issued: 0, returned: 0, sale: 0, amount: 0 }
   const colSale: Record<string, number> = {}
   for (const dr of data.drs) {
-    for (const c of data.columns) {
+    for (const c of cols) {
       totals.issued += num(iss[dr.id]?.[c.key]?.issued)
       totals.returned += num(iss[dr.id]?.[c.key]?.returned)
       const s = sale(dr.id, c.key)
       colSale[c.key] = (colSale[c.key] ?? 0) + s
       totals.sale += s
-      totals.amount += s * price(c.key)
+      totals.amount += s * price(dr, 'RETAIL', c.key)
     }
   }
   return (
     <div className="card overflow-x-auto">
       <table className="data-table">
         <thead>
+          <GroupHeader cols={cols} lead={1} trail={2} />
           <tr>
             <th className="sticky left-0 z-10 bg-white">DR</th>
-            {data.columns.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
+            {cols.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
             <th className="text-right">Total M</th>
             <th className="text-right">Amount Rs</th>
           </tr>
           <tr className="text-xs text-slate-400">
-            <th className="sticky left-0 z-10 bg-white font-normal">BIZOM rate per M</th>
-            {data.columns.map((c) => <th key={c.key} className="text-right font-normal">{formatNumber(price(c.key).toFixed(0))}</th>)}
+            <th className="sticky left-0 z-10 bg-white font-normal">BIZOM DD rate per M</th>
+            {cols.map((c) => <th key={c.key} className="text-right font-normal">{formatNumber(num(data.prices.DD?.[c.key]).toFixed(0))}</th>)}
             <th /><th />
           </tr>
         </thead>
         <tbody>
           {data.drs.map((dr) => {
-            const rowTotal = (side: Side) => data.columns.reduce((s, c) => s + num(iss[dr.id]?.[c.key]?.[side]), 0)
-            const saleTotal = data.columns.reduce((s, c) => s + sale(dr.id, c.key), 0)
-            const amount = data.columns.reduce((s, c) => s + sale(dr.id, c.key) * price(c.key), 0)
+            const rowTotal = (side: Side) => cols.reduce((s, c) => s + num(iss[dr.id]?.[c.key]?.[side]), 0)
+            const saleTotal = cols.reduce((s, c) => s + sale(dr.id, c.key), 0)
+            const amount = cols.reduce((s, c) => s + sale(dr.id, c.key) * price(dr, 'RETAIL', c.key), 0)
             return (
               <Fragment key={dr.id}>
                 {SIDES.map((side, i) => (
@@ -276,12 +376,16 @@ function IssuanceTable({ data, iss, original, price, onChange }: {
                       <div className="flex items-baseline justify-between gap-4">
                         <span>
                           {i === 0 && <span className="font-medium">{dr.name}</span>}
-                          {i === 1 && <span className="text-xs text-slate-400">{dr.code.replace('SGD_SGD_', '')}</span>}
+                          {i === 1 && (
+                            <span className="text-xs text-slate-400">
+                              {dr.code.replace('SGD_SGD_', '')} · {CHANNEL_SHORT[dr.channel] ?? dr.channel}
+                            </span>
+                          )}
                         </span>
                         <span className="text-xs text-slate-500">{side === 'issued' ? 'Issued' : 'Returned'}</span>
                       </div>
                     </td>
-                    {data.columns.map((c) => {
+                    {cols.map((c) => {
                       const value = iss[dr.id]?.[c.key]?.[side] ?? ''
                       const changed = num(value) !== num(original[dr.id]?.[c.key]?.[side])
                       return (
@@ -300,7 +404,7 @@ function IssuanceTable({ data, iss, original, price, onChange }: {
                 ))}
                 <tr className="bg-slate-50">
                   <td className="sticky left-0 z-10 bg-slate-50 text-right text-xs font-medium text-slate-700">Sale</td>
-                  {data.columns.map((c) => {
+                  {cols.map((c) => {
                     const s = sale(dr.id, c.key)
                     return (
                       <td key={c.key} className={`text-right text-sm font-medium ${s < 0 ? 'text-red-600' : ''}`}>
@@ -323,7 +427,7 @@ function IssuanceTable({ data, iss, original, price, onChange }: {
                 {formatNumber(totals.issued.toFixed(2))} issued &minus; {formatNumber(totals.returned.toFixed(2))} returned
               </div>
             </td>
-            {data.columns.map((c) => (
+            {cols.map((c) => (
               <td key={c.key} className="text-right px-3">{formatNumber((colSale[c.key] ?? 0).toFixed(2))}</td>
             ))}
             <td className="text-right px-3">{formatNumber(totals.sale.toFixed(2))}</td>
@@ -335,26 +439,29 @@ function IssuanceTable({ data, iss, original, price, onChange }: {
   )
 }
 
-function BucketTable({ data, bucket, grid, original, price, onChange }: {
+function BucketTable({ data, cols, bucket, grid, original, price, onChange }: {
   data: DayResponse
+  cols: Column[]
   bucket: Bucket
   grid: Grid
   original: Grid
-  price: (key: string) => number
+  price: (dr: DR, bucket: Bucket, key: string) => number
   onChange: (drId: number, key: string, value: string) => void
 }) {
-  const columnTotals = Object.fromEntries(data.columns.map((c) => [
+  const columnTotals = Object.fromEntries(cols.map((c) => [
     c.key, data.drs.reduce((sum, dr) => sum + num(grid[dr.id]?.[bucket]?.[c.key]), 0),
   ]))
   const grandTotal = Object.values(columnTotals).reduce((a, b) => a + b, 0)
-  const grandAmount = data.columns.reduce((s, c) => s + columnTotals[c.key] * price(c.key), 0)
+  const grandAmount = data.drs.reduce(
+    (s, dr) => s + cols.reduce((t, c) => t + num(grid[dr.id]?.[bucket]?.[c.key]) * price(dr, bucket, c.key), 0), 0)
   return (
     <div className="card overflow-x-auto">
       <table className="data-table">
         <thead>
+          <GroupHeader cols={cols} lead={1} trail={2} />
           <tr>
-            <th className="sticky left-0 bg-white">DR</th>
-            {data.columns.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
+            <th className="sticky left-0 z-10 bg-white">DR</th>
+            {cols.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
             <th className="text-right">Total M</th>
             <th className="text-right">Amount Rs</th>
           </tr>
@@ -362,15 +469,12 @@ function BucketTable({ data, bucket, grid, original, price, onChange }: {
         <tbody>
           {data.drs.map((dr) => {
             const row = grid[dr.id]?.[bucket] ?? {}
-            const rowTotal = data.columns.reduce((sum, c) => sum + num(row[c.key]), 0)
-            const amount = data.columns.reduce((sum, c) => sum + num(row[c.key]) * price(c.key), 0)
+            const rowTotal = cols.reduce((sum, c) => sum + num(row[c.key]), 0)
+            const amount = cols.reduce((sum, c) => sum + num(row[c.key]) * price(dr, bucket, c.key), 0)
             return (
               <tr key={dr.id}>
-                <td className="sticky left-0 bg-white whitespace-nowrap">
-                  <div className="font-medium">{dr.name}</div>
-                  <div className="text-xs text-slate-400">{dr.code.replace('SGD_SGD_', '')}</div>
-                </td>
-                {data.columns.map((c) => {
+                <td className="sticky left-0 z-10 bg-white whitespace-nowrap"><DRCell dr={dr} /></td>
+                {cols.map((c) => {
                   const changed = num(row[c.key]) !== num(original[dr.id]?.[bucket]?.[c.key])
                   return (
                     <td key={c.key} className="px-1 py-1">
@@ -390,8 +494,8 @@ function BucketTable({ data, bucket, grid, original, price, onChange }: {
         </tbody>
         <tfoot>
           <tr className="font-semibold bg-slate-50">
-            <td className="py-2 px-3 sticky left-0 bg-slate-50">Total</td>
-            {data.columns.map((c) => (
+            <td className="py-2 px-3 sticky left-0 z-10 bg-slate-50">Total</td>
+            {cols.map((c) => (
               <td key={c.key} className="text-right px-3">{formatNumber(columnTotals[c.key].toFixed(2))}</td>
             ))}
             <td className="text-right px-3">{formatNumber(grandTotal.toFixed(2))}</td>

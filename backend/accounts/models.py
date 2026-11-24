@@ -31,6 +31,12 @@ class UserProfile(models.Model):
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='subordinates',
         help_text='Field hierarchy: DR -> FSO -> Distribution Manager (an FSO supervises up to ~7 DRs).',
     )
+    sales_channel = models.CharField(
+        max_length=10, blank=True,
+        help_text="DR's own channel: DD (urban), VDD (rural), MANDI (wholesale mandi device) or SHOP "
+                  '(shop-sale device, used by RTFs). Scattered wholesale by a DD/VDD DR counts as UWS/RWS. '
+                  'See distribution.channels.',
+    )
     is_blocked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

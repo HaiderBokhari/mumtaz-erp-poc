@@ -118,6 +118,11 @@ class BundleLoader:
         self._settlements()
         self._payroll()
         StockLevel.rebuild_from_ledger()
+        if self.b.get('updates'):
+            from .client_updates import UpdateApplier
+            UpdateApplier(self.b['updates'], log=self.log).run()
+        from distribution.channels import backfill_sale_channels
+        backfill_sale_channels()
         self.log('Client bundle loaded.')
 
     # -- reset -------------------------------------------------------------
@@ -233,7 +238,11 @@ class BundleLoader:
             user.save(update_fields=['password'])
             user.groups.add(dr_group)
             user.profile, _ = UserProfile.objects.update_or_create(
-                user=user, defaults={'dr_code': code, 'warehouse': self.hq, 'supervisor': fso_profile},
+                user=user, defaults={
+                    'dr_code': code, 'warehouse': self.hq, 'supervisor': fso_profile,
+                    'sales_channel': {'RURAL': Channel.TYPE_VDD, 'MANDI': Channel.TYPE_MANDI}.get(
+                        dr['area'], Channel.TYPE_DD),
+                },
             )
             grade = grades['VDD' if dr['area'] == 'RURAL' else 'DD']
             Employee.objects.create(
