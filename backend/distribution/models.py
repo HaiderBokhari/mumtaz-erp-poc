@@ -432,6 +432,28 @@ class DRIssuance(models.Model):
         return self.issued_m - self.returned_m
 
 
+class DRDashboardFigure(models.Model):
+    """
+    The day's sale value for a DR as BIZOM's dashboard shows it, typed in by
+    the KPO next to the issuance/return sheet (team request 24 Nov 2026).
+    Not every DR sale is at the non-filer retail rate (FBR / filer shops),
+    so the difference between this and the sheet's amount is the FBR part.
+    """
+
+    date = models.DateField(db_index=True)
+    dr = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='dashboard_figures')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['date', 'dr']
+
+    def __str__(self):
+        return f'{self.date} {self.dr} dashboard Rs {self.amount}'
+
+
 class DRSettlement(models.Model):
     """
     A DR's end-of-day cash settlement, laid out exactly like Mumtaz & Co's

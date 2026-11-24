@@ -14,7 +14,7 @@ import os
 
 from django.core.management.base import BaseCommand
 
-from core.client_updates import read_expenses, read_targets
+from core.client_updates import modal_prices, read_expenses, read_targets, refine_modal_prices
 
 
 class Command(BaseCommand):
@@ -24,6 +24,7 @@ class Command(BaseCommand):
         parser.add_argument('--source', required=True)
         parser.add_argument('--manual', required=True)
         parser.add_argument('--out', required=True)
+        parser.add_argument('--bundle', help='bundle.json.gz, to correct price-list rates from its BIZOM invoices.')
 
     def handle(self, *args, **opts):
         with open(opts['manual'], encoding='utf-8') as fh:
@@ -43,6 +44,10 @@ class Command(BaseCommand):
         for spec in manual.get('expenses', []):
             rows = read_expenses(os.path.join(opts['source'], spec['file']))
             updates['expenses'] = {'month': spec['month'], 'rows': rows}
+        if opts.get('bundle'):
+            with gzip.open(opts['bundle'], 'rt', encoding='utf-8') as fh:
+                bundle = json.load(fh)
+            updates['prices'] = refine_modal_prices(bundle, modal_prices(bundle))
         with gzip.open(opts['out'], 'wt', encoding='utf-8') as fh:
             json.dump(updates, fh)
         self.stdout.write(self.style.SUCCESS(

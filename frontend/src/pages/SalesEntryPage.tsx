@@ -5,6 +5,7 @@ import { formatMoney, formatNumber } from '../utils/format'
 type Bucket = 'RETAIL' | 'SCATTERED'
 type Mode = 'ISSUANCE' | Bucket
 type Section = 'FMC' | 'NC'
+type Dash = Record<string, string>
 type Grid = Record<string, Record<Bucket, Record<string, string>>>
 type Side = 'issued' | 'returned'
 type IssGrid = Record<string, Record<string, Record<Side, string>>>
@@ -20,6 +21,7 @@ interface DayResponse {
   drs: DR[]
   values: Record<string, Partial<Record<Bucket, Record<string, string>>>>
   issuance: Record<string, Record<string, [string, string]>>
+  dashboard: Record<string, string>
   saved?: { rows_changed: number; drs_updated: number }
 }
 
@@ -28,7 +30,6 @@ const MODE_LABELS: Record<Mode, string> = {
   RETAIL: 'Sold in retail',
   SCATTERED: 'Sold in scattered wholesale',
 }
-const SECTION_LABELS: Record<Section, string> = { FMC: 'Cigarettes (FMC)', NC: 'Velo (NC)' }
 const CHANNEL_SHORT: Record<string, string> = { DD: 'DD', VDD: 'VDD', WS: 'UWS', VWS: 'RWS', MANDI: 'Mandi', SHOP: 'Shop sale' }
 const BUCKETS: Bucket[] = ['RETAIL', 'SCATTERED']
 const SIDES: Side[] = ['issued', 'returned']
@@ -80,12 +81,13 @@ const cellClass = (changed: boolean) =>
 export default function SalesEntryPage() {
   const [date, setDate] = useState(today())
   const [mode, setMode] = useState<Mode>('ISSUANCE')
-  const [section, setSection] = useState<Section>('FMC')
   const [data, setData] = useState<DayResponse | null>(null)
   const [grid, setGrid] = useState<Grid>({})
   const [original, setOriginal] = useState<Grid>({})
   const [iss, setIss] = useState<IssGrid>({})
   const [issOriginal, setIssOriginal] = useState<IssGrid>({})
+  const [dash, setDash] = useState<Dash>({})
+  const [dashOriginal, setDashOriginal] = useState<Dash>({})
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -98,6 +100,9 @@ export default function SalesEntryPage() {
     const i = toIssGrid(res)
     setIss(i)
     setIssOriginal(clone(i))
+    const d: Dash = Object.fromEntries(Object.entries(res.dashboard ?? {}).map(([k, v]) => [k, String(Number(v))]))
+    setDash(d)
+    setDashOriginal(clone(d))
   }
 
   useEffect(() => {
@@ -140,7 +145,14 @@ export default function SalesEntryPage() {
 
   const count = (o: object) =>
     Object.values(o).reduce((n: number, inner: object) => n + Object.values(inner).reduce((m: number, x: object) => m + Object.keys(x ?? {}).length, 0), 0)
-  const changeCount = count(changes) + count(issChanges)
+  const dashChanges = useMemo(() => {
+    const out: Dash = {}
+    for (const id of new Set([...Object.keys(dash), ...Object.keys(dashOriginal)])) {
+      if ((dash[id] ?? '') !== (dashOriginal[id] ?? '') && num(dash[id]) !== num(dashOriginal[id])) out[id] = dash[id] ?? ''
+    }
+    return out
+  }, [dash, dashOriginal])
+  const changeCount = count(changes) + count(issChanges) + Object.keys(dashChanges).length
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => { if (changeCount) e.preventDefault() }
@@ -168,6 +180,10 @@ export default function SalesEntryPage() {
         res = (await api.post<DayResponse>('actual-sales/day/', { date, issuance: issChanges })).data
         rows += res.saved?.rows_changed ?? 0
         Object.keys(issChanges).forEach((d) => drs.add(d))
+      }
+      if (Object.keys(dashChanges).length) {
+        res = (await api.post<DayResponse>('actual-sales/day/', { date, dashboard: dashChanges })).data
+        Object.keys(dashChanges).forEach((d) => drs.add(d))
       }
       if (Object.keys(changes).length) {
         res = (await api.post<DayResponse>('actual-sales/day/', { date, values: changes })).data
@@ -205,9 +221,27 @@ export default function SalesEntryPage() {
     return out
   }, [data, grid, iss, issOriginal])
 
+  // Each DR's whole-day amount (retail + scattered, all brands), to compare with the BIZOM dashboard.
+  const dayAmount = useMemo(() => {
+    const out: Record<string, number> = {}
+    if (!data) return out
+    for (const dr of data.drs) {
+      let rs = 0
+      for (const c of data.columns) {
+        const sides = iss[dr.id]?.[c.key]
+        const fromIssuance = sides && (num(sides.issued) || num(sides.returned) || num(issOriginal[dr.id]?.[c.key]?.issued))
+        const retail = fromIssuance ? num(sides.issued) - num(sides.returned) : num(grid[dr.id]?.RETAIL?.[c.key])
+        rs += retail * num(data.prices[saleChannel(dr, 'RETAIL')]?.[c.key])
+        rs += num(grid[dr.id]?.SCATTERED?.[c.key]) * num(data.prices[saleChannel(dr, 'SCATTERED')]?.[c.key])
+      }
+      out[dr.id] = rs
+    }
+    return out
+  }, [data, grid, iss, issOriginal])
+
   if (!data) return <div className="text-slate-500">Loading...</div>
 
-  const cols = data.columns.filter((c) => c.section === section)
+  const cols = data.columns
   const price = (dr: DR, bucket: Bucket, key: string) => num(data.prices[saleChannel(dr, bucket)]?.[key])
   const dayTotal = Object.values(byChannel).reduce((a, v) => ({ m: a.m + v.m, rs: a.rs + v.rs }), { m: 0, rs: 0 })
 
@@ -262,23 +296,14 @@ export default function SalesEntryPage() {
             </button>
           ))}
         </div>
-        <div className="flex gap-1 pb-1.5">
-          {(['FMC', 'NC'] as Section[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => setSection(s)}
-              className={`rounded-full px-3 py-1 text-xs border ${
-                section === s ? 'bg-brand-600 border-brand-600 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              {SECTION_LABELS[s]}
-            </button>
-          ))}
-        </div>
       </div>
 
       {mode === 'ISSUANCE' ? (
-        <IssuanceTable data={data} cols={cols} iss={iss} original={issOriginal} price={price} onChange={setIssCell} />
+        <IssuanceTable
+          data={data} cols={cols} iss={iss} original={issOriginal} price={price} onChange={setIssCell}
+          dash={dash} dashOriginal={dashOriginal} dayAmount={dayAmount}
+          onDash={(drId, v) => setDash((d) => ({ ...d, [drId]: v }))}
+        />
       ) : (
         <BucketTable
           data={data} cols={cols} bucket={mode} grid={grid} original={original} price={price}
@@ -287,11 +312,10 @@ export default function SalesEntryPage() {
       )}
 
       <p className="text-xs text-slate-500">
-        Totals and amounts in the table are for the {SECTION_LABELS[section]} columns; the channel boxes above cover
-        everything. Issuance &amp; Return saves the sale as the DR&rsquo;s retail sale, so it also shows on the &ldquo;Sold in
+        Cigarettes and every Velo SKU are on one sheet; scroll right for Velo. &ldquo;BIZOM dashboard&rdquo;: type the
+        DR&rsquo;s day value from the BIZOM dashboard; FBR is that minus the DR&rsquo;s whole-day amount here. Issuance &amp; Return saves the sale as the DR&rsquo;s retail sale, so it also shows on the &ldquo;Sold in
         retail&rdquo; tab. Channels: each DR&rsquo;s retail sale counts for their own channel (DD, VDD, Mandi device, Shop sale
-        device for RTFs); scattered wholesale by a DD DR is UWS and by a VDD DR is RWS. &ldquo;CI&rdquo; includes Capstan
-        Select; CbPMO includes the Q2 LEP pack. Changed cells are highlighted until saved.
+        device for RTFs); scattered wholesale by a DD DR is UWS and by a VDD DR is RWS. CbPMO includes the Q2 LEP pack. Changed cells are highlighted until saved.
       </p>
     </div>
   )
@@ -325,14 +349,26 @@ function DRCell({ dr }: { dr: DR }) {
   )
 }
 
-function IssuanceTable({ data, cols, iss, original, price, onChange }: {
+function IssuanceTable({ data, cols, iss, original, price, onChange, dash, dashOriginal, dayAmount, onDash }: {
   data: DayResponse
   cols: Column[]
   iss: IssGrid
   original: IssGrid
   price: (dr: DR, bucket: Bucket, key: string) => number
   onChange: (drId: number, key: string, side: Side, value: string) => void
+  dash: Dash
+  dashOriginal: Dash
+  dayAmount: Record<string, number>
+  onDash: (drId: number, value: string) => void
 }) {
+  let dashTotal = 0
+  let fbrTotal = 0
+  for (const dr of data.drs) {
+    if (dash[dr.id]) {
+      dashTotal += num(dash[dr.id])
+      fbrTotal += num(dash[dr.id]) - (dayAmount[dr.id] ?? 0)
+    }
+  }
   const sale = (drId: number, key: string) => num(iss[drId]?.[key]?.issued) - num(iss[drId]?.[key]?.returned)
   const totals = { issued: 0, returned: 0, sale: 0, amount: 0 }
   const colSale: Record<string, number> = {}
@@ -350,17 +386,19 @@ function IssuanceTable({ data, cols, iss, original, price, onChange }: {
     <div className="card overflow-x-auto">
       <table className="data-table">
         <thead>
-          <GroupHeader cols={cols} lead={1} trail={2} />
+          <GroupHeader cols={cols} lead={1} trail={4} />
           <tr>
             <th className="sticky left-0 z-10 bg-white">DR</th>
             {cols.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
             <th className="text-right">Total M</th>
             <th className="text-right">Amount Rs</th>
+            <th className="text-right">BIZOM dashboard Rs</th>
+            <th className="text-right">FBR Rs</th>
           </tr>
           <tr className="text-xs text-slate-400">
             <th className="sticky left-0 z-10 bg-white font-normal">BIZOM DD rate per M</th>
             {cols.map((c) => <th key={c.key} className="text-right font-normal">{formatNumber(num(data.prices.DD?.[c.key]).toFixed(0))}</th>)}
-            <th /><th />
+            <th /><th /><th /><th />
           </tr>
         </thead>
         <tbody>
@@ -400,6 +438,8 @@ function IssuanceTable({ data, cols, iss, original, price, onChange }: {
                     })}
                     <td className="text-right text-slate-500">{formatNumber(rowTotal(side).toFixed(2))}</td>
                     <td />
+                    <td />
+                    <td />
                   </tr>
                 ))}
                 <tr className="bg-slate-50">
@@ -414,6 +454,16 @@ function IssuanceTable({ data, cols, iss, original, price, onChange }: {
                   })}
                   <td className={`text-right font-semibold ${saleTotal < 0 ? 'text-red-600' : ''}`}>{formatNumber(saleTotal.toFixed(2))}</td>
                   <td className="text-right font-semibold">{formatMoney(amount)}</td>
+                  <td className="px-1 py-0.5">
+                    <input
+                      type="number" step="1" min="0" inputMode="decimal" placeholder="—"
+                      className={`${cellClass(num(dash[dr.id]) !== num(dashOriginal[dr.id]))} w-28`}
+                      value={dash[dr.id] ?? ''} onChange={(e) => onDash(dr.id, e.target.value)}
+                    />
+                  </td>
+                  <td className="text-right font-medium text-slate-700">
+                    {dash[dr.id] ? formatMoney(num(dash[dr.id]) - (dayAmount[dr.id] ?? 0)) : ''}
+                  </td>
                 </tr>
               </Fragment>
             )
@@ -432,6 +482,8 @@ function IssuanceTable({ data, cols, iss, original, price, onChange }: {
             ))}
             <td className="text-right px-3">{formatNumber(totals.sale.toFixed(2))}</td>
             <td className="text-right px-3">{formatMoney(totals.amount)}</td>
+            <td className="text-right px-3">{dashTotal ? formatMoney(dashTotal) : ''}</td>
+            <td className="text-right px-3">{dashTotal ? formatMoney(fbrTotal) : ''}</td>
           </tr>
         </tfoot>
       </table>

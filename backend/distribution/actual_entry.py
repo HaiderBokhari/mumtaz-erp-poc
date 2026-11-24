@@ -25,7 +25,7 @@ from catalog.models import SKU, Channel, ChannelPrice
 from warehouses.models import StockLedgerEntry, Warehouse
 
 from . import channels
-from .models import ActualSale, DRIssuance, dr_party_for
+from .models import ActualSale, DRDashboardFigure, DRIssuance, dr_party_for
 
 D0 = Decimal('0')
 
@@ -85,7 +85,18 @@ def entry_columns():
     then every Velo (NC) SKU on its own, grouped by strength (team request
     24 Nov 2026: "we need all the SKUs of 6, 10, 14 and 17 mg").
     """
-    columns = [{**c, 'section': 'FMC', 'group': ''} for c in SHEET_COLUMNS if 'skus' in c]
+    columns = []
+    for c in SHEET_COLUMNS:
+        if 'skus' not in c:
+            continue
+        if c['key'] == 'CI':
+            # Capstan Select has its own, lower rate: its own column (team, 24 Nov 2026).
+            columns.append({**c, 'label': 'Capstan Intl', 'skus': ['Capstan International 20HL'],
+                            'section': 'FMC', 'group': 'Cigarettes (FMC)'})
+            columns.append({'key': 'CSEL', 'label': 'Capstan Select', 'skus': ['Capstan Select 20HL'],
+                            'section': 'FMC', 'group': 'Cigarettes (FMC)'})
+            continue
+        columns.append({**c, 'section': 'FMC', 'group': 'Cigarettes (FMC)'})
     velo = sorted(
         SKU.objects.filter(category=SKU.CATEGORY_NC),
         key=lambda s: (_velo_mg(s.bizom_name or s.name), 'nano' not in (s.bizom_name or s.name).lower(),
@@ -94,7 +105,7 @@ def entry_columns():
     for sku in velo:
         name = sku.bizom_name or sku.name
         columns.append({'key': f'V{sku.id}', 'label': _velo_label(name), 'skus': [name],
-                        'section': 'NC', 'group': f'{_velo_mg(name)} mg'})
+                        'section': 'NC', 'group': f'Velo {_velo_mg(name)} mg'})
     return columns
 
 
@@ -146,8 +157,10 @@ def day_grid(day):
     issuance = defaultdict(dict)
     for row in DRIssuance.objects.filter(date=day):
         issuance[str(row.dr_id)][row.column] = [str(row.issued_m), str(row.returned_m)]
+    dashboard = {str(f.dr_id): str(f.amount) for f in DRDashboardFigure.objects.filter(date=day)}
     return {
         'date': day.isoformat(),
+        'dashboard': dashboard,
         'columns': [{k: c[k] for k in ('key', 'label', 'section', 'group')} for c in columns],
         'prices': _price_lists(day, columns),
         'channels': [{'key': k, 'label': channels.LABELS[k]} for k in channels.ORDER],
@@ -283,6 +296,17 @@ def save_issuance(day, values, user):
             retail.setdefault(str(dr.id), {ActualSale.BUCKET_RETAIL: {}})
             retail[str(dr.id)][ActualSale.BUCKET_RETAIL][key] = str(row.sale_m)
     return save_day(day, retail, user)
+
+
+def save_dashboard(day, values, user):
+    """{dr_id: amount}: the BIZOM dashboard value per DR for the day (blank clears it)."""
+    for dr_id, raw in values.items():
+        dr = User.objects.get(pk=int(dr_id), groups__name=settings.ROLE_DR)
+        if raw in (None, ''):
+            DRDashboardFigure.objects.filter(date=day, dr=dr).delete()
+            continue
+        DRDashboardFigure.objects.update_or_create(
+            date=day, dr=dr, defaults={'amount': q2(raw), 'updated_by': user})
 
 
 def _post_value_delta(dr, day, value, cost, reference, user):

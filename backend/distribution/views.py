@@ -12,7 +12,7 @@ from accounts.permissions import RolePermission
 from warehouses.models import StockLedgerEntry
 
 from .imports import TEMPLATE_COLUMNS, import_ptc_sales_file
-from .actual_entry import day_grid, save_day, save_issuance
+from .actual_entry import day_grid, save_dashboard, save_day, save_issuance
 from .models import ActualSale, DRSettlement, PaymentReceipt, SalesOrder, SalesReturn, SalesTarget, Shop
 from .serializers import (
     DRSettlementSerializer, PaymentReceiptSerializer, SalesOrderSerializer, SalesReturnSerializer,
@@ -70,7 +70,10 @@ class ActualSaleViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'detail': 'date must be YYYY-MM-DD'}, status=400)
         if request.method == 'POST':
             try:
-                if 'issuance' in request.data:
+                if 'dashboard' in request.data:
+                    save_dashboard(day, request.data.get('dashboard') or {}, request.user)
+                    summary = {'rows_changed': 0, 'drs_updated': 0}
+                elif 'issuance' in request.data:
                     summary = save_issuance(day, request.data.get('issuance') or {}, request.user)
                 else:
                     summary = save_day(day, request.data.get('values') or {}, request.user)

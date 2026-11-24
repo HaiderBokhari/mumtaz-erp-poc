@@ -211,15 +211,25 @@ class CompanyVsActualView(APIView):
         if group not in self.GROUPS:
             group = 'dr'
         company_key, actual_key = self.GROUPS[group]
+        company_lines = _company_lines(start, end).annotate(channel_key=self.GROUPS['channel'][0])
+        actual = _actual_rows(start, end)
+        # Optional filters so a channel can be matched with BIZOM brand-wise / DR-wise, for a month or one day.
+        day = request.query_params.get('date')
+        if day:
+            company_lines = company_lines.filter(sales_order__order_date=day)
+            actual = actual.filter(date=day)
+        channel = request.query_params.get('channel')
+        if channel:
+            company_lines = company_lines.filter(channel_key=channel)
+            actual = actual.filter(channel_type=channel)
         rows = defaultdict(lambda: {'company_m': D0, 'company_value': D0, 'actual_m': D0, 'actual_value': D0,
                                     'assumed': False})
         company_expr = F(company_key) if isinstance(company_key, str) else company_key
-        for r in _company_lines(start, end).values(key=company_expr).annotate(
+        for r in company_lines.values(key=company_expr).annotate(
                 m=_money_sum('quantity'), value=_money_sum(F('quantity') * F('unit_price'))):
             rows[r['key']]['company_m'] = r['m']
             rows[r['key']]['company_value'] = r['value']
         if actual_key:
-            actual = _actual_rows(start, end)
             for r in actual.values(key=F(actual_key)).annotate(
                     m=_money_sum('quantity_m'), value=_money_sum(F('quantity_m') * F('unit_price'))):
                 rows[r['key']]['actual_m'] = r['m']
@@ -269,7 +279,7 @@ class CompanyVsActualView(APIView):
             from distribution.channels import ORDER
             sort_key = lambda r: ORDER.index(r['key']) if r['key'] in ORDER else len(ORDER)  # noqa: E731
         return Response({
-            'month': label, 'months': months, 'group': group,
+            'month': label, 'months': months, 'group': group, 'date': day or '', 'channel': channel or '',
             'rows': sorted(out, key=sort_key), 'totals': totals,
         })
 

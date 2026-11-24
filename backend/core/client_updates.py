@@ -10,6 +10,9 @@ What it applies (team answers, 23 Nov 2026):
 - Renames, e.g. DR28 is the wholesale mandi device, not "Shop Sale".
 - Monthly DR targets from their "TARGET OCT AND NOV" sheet, matched to DRs
   by name (names the sheet spells differently are listed, not guessed).
+- Price-list corrections: each SKU's rate per BIZOM price list is the
+  most common invoiced rate, not the month's average (which a few discount
+  days pull down, e.g. Gold Leaf), fixing the rates loaded with the bundle.
 - Each DR's own sales channel (DD / VDD / MANDI / SHOP), and the channel
   tag on actual-sale rows that have none yet.
 - One month of real expenses from their Expences sheet, replacing the
@@ -110,6 +113,42 @@ def read_expenses(path):
     return out
 
 
+def modal_prices(bundle):
+    """{sku name: {price list: rate per M}} — the rate most M were invoiced at."""
+    from collections import Counter, defaultdict
+
+    names = bundle['sku_names']
+    weight = defaultdict(Counter)
+    for order in bundle['orders']:
+        pricelist = order[5]
+        for idx, m, value, _ait in order[6]:
+            if m > 0 and value > 0:
+                weight[(names[idx], pricelist)][round(value / m)] += m
+    out = defaultdict(dict)
+    for (name, pricelist), counter in weight.items():
+        rate, _ = counter.most_common(1)[0]
+        out[name][pricelist] = rate
+    return out
+
+
+def refine_modal_prices(bundle, rates):
+    """Replace each modal whole-rupee rate with the exact average of the lines invoiced at it."""
+    from collections import defaultdict
+
+    names = bundle['sku_names']
+    acc = defaultdict(lambda: [0.0, 0.0])
+    for order in bundle['orders']:
+        pricelist = order[5]
+        for idx, m, value, _ait in order[6]:
+            name = names[idx]
+            if m > 0 and value > 0 and round(value / m) == rates.get(name, {}).get(pricelist):
+                a = acc[(name, pricelist)]
+                a[0] += m
+                a[1] += value
+    return {name: {pl: round(acc[(name, pl)][1] / acc[(name, pl)][0], 2) for pl in pls}
+            for name, pls in rates.items()}
+
+
 # -- applying -------------------------------------------------------------------------
 
 class UpdateApplier:
@@ -123,6 +162,7 @@ class UpdateApplier:
     def run(self):
         self._inactive()
         self._renames()
+        self._prices()
         self._channels()
         self._targets()
         self._expenses()
@@ -149,6 +189,36 @@ class UpdateApplier:
             Employee.objects.filter(user=user).update(full_name=name)
             Party.objects.filter(name=old_party).update(name=f'DR {code} - {name}')
             self.log(f'Renamed {code} to {name}')
+
+    def _prices(self):
+        from catalog.models import SKU, ChannelPrice
+
+        rates = self.u.get('prices')
+        if not rates:
+            return
+        wholesale = {Channel.TYPE_WS, Channel.TYPE_VWS, Channel.TYPE_MANDI}
+        fixed = []
+        for sku in SKU.objects.exclude(bizom_name=''):
+            lists = rates.get(sku.bizom_name)
+            if not lists:
+                continue
+            retail = lists.get('RETAIL_PRICE_NON_TAX FILER') or max(lists.values())
+            for channel in Channel.objects.all():
+                if channel.channel_type in wholesale:
+                    rate = lists.get('WHOLESALE_PRICE_NON_TAX_FILER') or retail
+                elif channel.filer_status == Channel.FILER:
+                    rate = lists.get('RETAIL_PRICE_TAX FILER') or retail
+                else:
+                    rate = retail
+                row = ChannelPrice.objects.filter(channel=channel, sku=sku).order_by('effective_from').first()
+                rate = Decimal(str(rate)).quantize(Decimal('0.01'))
+                if row and abs(row.price - rate) >= 1:
+                    # A correction of the loaded list, not a price change: fix the row in place.
+                    row.price = rate
+                    row.save(update_fields=['price'])
+                    fixed.append(f'{sku.bizom_name} / {channel.name}')
+        self.log(f'Price list: {len(fixed)} rates corrected' + (f' ({", ".join(sorted({f.split(" / ")[0] for f in fixed}))})' if fixed else ''))
+        self.result['prices_fixed'] = fixed
 
     def _channels(self):
         from accounts.models import UserProfile

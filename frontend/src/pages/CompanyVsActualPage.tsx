@@ -16,6 +16,12 @@ const TABS: { key: Group; label: string }[] = [
   { key: 'madam', label: 'Madam register' },
 ]
 
+// Pick a channel, then By DR / By brand gives that channel salesman-wise / brand-wise to match with BIZOM.
+const CHANNELS = [
+  { key: '', label: 'All' }, { key: 'DD', label: 'DD' }, { key: 'VDD', label: 'VDD' },
+  { key: 'WS', label: 'UWS' }, { key: 'VWS', label: 'RWS' }, { key: 'MANDI', label: 'Mandi' }, { key: 'SHOP', label: 'Shop sale' },
+]
+
 interface ComparisonResponse {
   month: string
   months: string[]
@@ -47,16 +53,20 @@ export default function CompanyVsActualPage() {
   const [data, setData] = useState<ComparisonResponse | null>(null)
   const [madam, setMadam] = useState<MadamResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [channel, setChannel] = useState('')
+  const [day, setDay] = useState('')
 
   useEffect(() => {
     setLoading(true)
-    const params = month ? { month } : {}
+    const params = day ? { month: day.slice(0, 7) } : month ? { month } : {}
     const request = group === 'madam'
       ? api.get<MadamResponse>('reports/madam-register/', { params }).then((res) => {
           setMadam(res.data)
           return res.data
         })
-      : api.get<ComparisonResponse>('reports/company-vs-actual/', { params: { ...params, group } }).then((res) => {
+      : api.get<ComparisonResponse>('reports/company-vs-actual/', {
+          params: { ...params, group, ...(channel ? { channel } : {}), ...(day ? { date: day } : {}) },
+        }).then((res) => {
           setData(res.data)
           return res.data
         })
@@ -66,7 +76,7 @@ export default function CompanyVsActualPage() {
         setMonth(res.month)
       })
       .finally(() => setLoading(false))
-  }, [group, month])
+  }, [group, month, channel, day])
 
   return (
     <div className="space-y-6">
@@ -98,6 +108,26 @@ export default function CompanyVsActualPage() {
           </button>
         ))}
       </div>
+
+      {group !== 'madam' && (
+        <div className="flex flex-wrap items-center gap-2 text-sm no-print">
+          <span className="text-slate-500">Channel</span>
+          {CHANNELS.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => setChannel(c.key)}
+              className={`rounded-full px-3 py-1 text-xs border ${
+                channel === c.key ? 'bg-brand-600 border-brand-600 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+          <span className="text-slate-500 ml-3">Day</span>
+          <input type="date" className="input w-auto py-1" value={day} onChange={(e) => setDay(e.target.value)} />
+          {day && <button className="text-xs text-brand-600" onClick={() => setDay('')}>whole month</button>}
+        </div>
+      )}
 
       {loading && <div className="text-slate-500 text-sm">Loading...</div>}
       {!loading && group !== 'madam' && data && <ComparisonTable data={data} group={group} />}
