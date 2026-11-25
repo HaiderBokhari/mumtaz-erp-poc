@@ -247,6 +247,23 @@ class Command(BaseCommand):
                         if isinstance(value, (int, float)) and abs(value) > 1e-6:
                             actual[(date, dr_no, sku_name, bucket)] += value
 
+        # The sheet's "Sr. No." is a row number, not the BIZOM device: Raza Sarwar
+        # is row 3 but device DR21 (distributor's DR list, 25 Nov 2026). Map rows
+        # to devices, and name each device after the person on it now.
+        row_to_dr = {int(k): int(v) for k, v in manual.get('sheet_row_to_dr', {}).items()}
+        if row_to_dr:
+            remapped = defaultdict(float)
+            for (date, dr_no, col, bucket), m in actual.items():
+                if dr_no in row_to_dr:
+                    remapped[(date, row_to_dr[dr_no], col, bucket)] += m
+                elif abs(m) > 1e-6:
+                    self.stderr.write(f'Sheet row {dr_no} has sales but no BIZOM device mapping; skipped.')
+            actual = remapped
+            sheet_drs = set(row_to_dr.values())
+            dr_names = {int(k): v for k, v in manual.get('dr_names', {}).items()}
+        else:
+            sheet_drs = set(dr_names)
+
         drs = {}
         for code, votes in dr_area_votes.items():
             drs[code] = {'code': code, 'area': max(votes, key=votes.get)}
@@ -259,7 +276,7 @@ class Command(BaseCommand):
             match = re.search(r'_DR(\d+)$', code)
             number = int(match.group(1)) if match else None
             dr['number'] = number
-            dr['on_actual_sheet'] = number in dr_names
+            dr['on_actual_sheet'] = number in sheet_drs
             dr['name'] = dr_names.get(number) or code.split('_')[-1]
 
         bundle = {
@@ -279,6 +296,8 @@ class Command(BaseCommand):
             'pay_grades': manual['pay_grades'],
             'sample_settlements': manual.get('sample_settlements', []),
             'fsos': manual.get('fsos', {}),
+            'opening_stock': read_godown_opening(opts['source'], manual.get('godown_opening'), skus),
+            'ptc_invoices': read_ptc_invoices(opts['source'], manual.get('ptc_invoices'), month),
         }
         os.makedirs(os.path.dirname(os.path.abspath(opts['out'])), exist_ok=True)
         with gzip.open(opts['out'], 'wt', encoding='utf-8') as fh:
@@ -300,3 +319,81 @@ class Command(BaseCommand):
         if not matches:
             raise CommandError(f'No file matching {pattern!r} in {folder!r}')
         return matches[-1]
+
+
+def _norm(text):
+    return re.sub(r'[^a-z]', '', str(text or '').lower())
+
+
+# Godown sheet headers that don't match a BIZOM SKU name by spelling.
+GODOWN_ALIASES = {'capstanelite': 'CbPM Elite', 'capstanbypallmalllep': 'Capstan by Pall Mall Q2 LEP 20HL',
+                  'johnplayerpolypack': 'John Player 20HL Poly Pack'}
+
+
+def read_godown_opening(source, spec, skus):
+    """Their GODOWN sheet for one evening: the "Actual On Hand" row, per SKU, in M."""
+    if not spec:
+        return None
+    import openpyxl
+
+    ws = openpyxl.load_workbook(os.path.join(source, spec['file']), data_only=True).worksheets[0]
+    rows = list(ws.iter_rows(values_only=True))
+    header = next(r for r in rows if any(str(c or '').strip().lower() == "sku's" for c in r))
+    on_hand = next(r for r in rows if str(r[1] or '').strip().lower() == 'actual on hand')
+    by_norm = {}
+    for sku in skus:
+        name = sku['bizom_name']
+        by_norm[_norm(re.sub(r'\s*20\s*HL.*$', '', name, flags=re.IGNORECASE))] = name
+    out = {}
+    for i, label in enumerate(header):
+        key = _norm(label)
+        name = GODOWN_ALIASES.get(key) or by_norm.get(key)
+        value = on_hand[i] if i < len(on_hand) else None
+        if name and isinstance(value, (int, float)):
+            out[name] = round(float(value), 3)
+    return {'date': spec['date'], 'stock': out}
+
+
+def read_ptc_invoices(source, spec, month):
+    """PTC's invoices for the month: date, number, quantity (M) and the tax split."""
+    if not spec:
+        return None
+    import datetime
+
+    import openpyxl
+
+    year, mon = map(int, month.split('-'))
+    ws = openpyxl.load_workbook(os.path.join(source, spec['file']), data_only=True).worksheets[0]
+    out = []
+    header = None
+    for row in ws.iter_rows(values_only=True):
+        cells = [str(c).strip().upper() if c is not None else '' for c in row]
+        if header is None:
+            if 'INVOICE NO' in cells:
+                header = {name: i for i, name in enumerate(cells) if name}
+            continue
+        raw_date = row[header['DATE']]
+        qty = row[header['QUANTITY UNITS']]
+        if raw_date is None or not isinstance(qty, (int, float)):
+            continue
+        # Excel read "01-09-2026" as 9 Jan for days <= 12; the sheet is one month, so
+        # take the day from whichever part is not the month.
+        if isinstance(raw_date, datetime.datetime):
+            day = raw_date.day if raw_date.month == mon else raw_date.month
+        else:
+            match = re.match(r'\s*(\d{1,2})[-/.]', str(raw_date))
+            if not match:
+                continue  # TOTAL row and the like
+            day = int(match.group(1))
+        num = lambda key: float(row[header[key]] or 0) if isinstance(row[header[key]], (int, float)) else 0.0  # noqa: E731
+        out.append({
+            'date': datetime.date(year, mon, day).isoformat(),
+            'invoice': str(row[header['INVOICE NO']]).strip(),
+            'quantity': round(float(qty), 3),
+            'excise': num('FEDERAL EXCISE DUTY'),
+            'value_incl_excise': num('VALUE INC OF EXCISE DUTY'),
+            'ait': num('ADVANCE INCOME TAX'),
+            'sales_tax': num('SALE TAX'),
+            'cost': num('IN S TAX & SED'),
+        })
+    return out

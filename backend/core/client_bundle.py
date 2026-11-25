@@ -410,14 +410,49 @@ class BundleLoader:
         for (sku_name, _day), m in bizom_by_sku_day.items():
             month_bizom[sku_name] += m
 
+        invoice_lines = self._invoice_lines(month_bizom)
+
+        # Opening stock: their godown sheet's "Actual On Hand" for an evening early in
+        # the month, wound back to the morning of the 1st (add back that period's
+        # physical sales, take off PTC deliveries). SKUs the sheet lacks (Velo) are seeded.
+        real = (self.b.get('opening_stock') or {})
+        real_stock = real.get('stock') or {}
+        as_of = datetime.date.fromisoformat(real['date']) if real_stock else None
+        sold_until = defaultdict(lambda: D0)
+        received_until = defaultdict(lambda: D0)
+        if as_of:
+            for row in ActualSale.objects.filter(date__lte=as_of).values('sku__bizom_name', 'quantity_m'):
+                sold_until[row['sku__bizom_name']] += row['quantity_m']
+            for inv, lines in invoice_lines:
+                if datetime.date.fromisoformat(inv['date']) <= as_of:
+                    for sku_name, qty, _cost in lines:
+                        received_until[sku_name] += qty
+
+        month_sold = defaultdict(lambda: D0)
+        for row in ActualSale.objects.values('sku__bizom_name', 'quantity_m'):
+            month_sold[row['sku__bizom_name']] += row['quantity_m']
+        month_received = defaultdict(lambda: D0)
+        for _inv, lines in invoice_lines:
+            for sku_name, qty, _cost in lines:
+                month_received[sku_name] += qty
+
         ledger = []
         opening_value = D0
         for sku_name, sku in self.skus.items():
-            opening = q3(month_bizom[sku_name] / 3 + 1)  # ~10 days of cover, seeded
+            if sku_name in real_stock:
+                opening = q3(max(Decimal(str(real_stock[sku_name])) + sold_until[sku_name]
+                                 - received_until[sku_name], D0))
+                reference, notes = 'OPENING-GODOWN', f'From the godown sheet, {as_of:%d %b %Y} evening'
+            else:
+                # ~10 days of cover, seeded, and never less than the month's physical
+                # sales minus PTC deliveries (so stock can't go negative).
+                needed = month_sold[sku_name] - month_received[sku_name] + 1
+                opening = q3(max(month_bizom[sku_name] / 3 + 1, needed))
+                reference, notes = 'OPENING-SEEDED', SEED_NOTE
             opening_value += opening * sku.current_cost_price
             ledger.append(StockLedgerEntry(
                 warehouse=self.hq, sku=sku, entry_type=StockLedgerEntry.OPENING_BALANCE,
-                quantity_change=opening, reference='OPENING-SEEDED', notes=SEED_NOTE,
+                quantity_change=opening, reference=reference, notes=notes,
                 created_by=self.owner, created_at=aware(self.month_start, 6),
             ))
             for code in ('BHLWAL', 'BHERA'):
@@ -444,41 +479,65 @@ class BundleLoader:
             ))
         StockLedgerEntry.objects.bulk_create(ledger, batch_size=2000)
 
-        # Weekly PTC lifting, sized to BIZOM (company) volume — PTC primaries
-        # track secondaries. Seeded until the real PTC invoices are shared.
-        self.log('Seeding weekly PTC purchase orders...')
         ptc = Party.objects.create(name='Pakistan Tobacco Company (PTC)', party_type=Party.SUPPLIER,
                                    address='PTC, Sargodha territory')
         self.ptc = ptc
         self.pos = []
-        by_sku_days = defaultdict(list)
-        for (sku_name, day), m in bizom_by_sku_day.items():
-            by_sku_days[sku_name].append((day, m))
-        week_start = self.month_start
-        n = 1
-        while week_start <= self.month_end:
-            week_end = min(week_start + datetime.timedelta(days=6), self.month_end)
-            po = PurchaseOrder.objects.create(
-                po_number=f'PO-{week_start.year}-{n:05d}', ptc_reference_number=f'PTC-SEEDED-{n:03d}',
-                warehouse=self.hq, supplier=ptc, order_date=week_start, created_by=self.owner,
-                notes='Seeded: weekly lifting sized to BIZOM volume',
-            )
-            for sku_name, sku in self.skus.items():
-                qty = sum((m for d, m in by_sku_days.get(sku_name, ())
-                           if week_start <= d <= week_end), D0)
-                if qty > 0:
-                    PurchaseOrderLine.objects.create(
-                        purchase_order=po, sku=sku, quantity=q3(qty), unit_cost=sku.current_cost_price,
+        self.po_ait = {}
+        if invoice_lines:
+            self.log('Loading PTC invoices...')
+            for n, (inv, lines) in enumerate(invoice_lines, start=1):
+                day = datetime.date.fromisoformat(inv['date'])
+                po = PurchaseOrder.objects.create(
+                    po_number=f'PO-{day.year}-{n:05d}', ptc_reference_number=inv['invoice'],
+                    warehouse=self.hq, supplier=ptc, order_date=day, created_by=self.owner,
+                    notes=(f"PTC invoice {inv['invoice']}: {inv['quantity']} M, excise {inv['excise']:,.0f}, "
+                           f"sales tax {inv['sales_tax']:,.0f}, advance tax {inv['ait']:,.0f}. "
+                           'SKU split estimated from BIZOM volume (invoice has totals only).'),
+                )
+                for sku_name, qty, cost in lines:
+                    if qty > 0:
+                        PurchaseOrderLine.objects.create(
+                            purchase_order=po, sku=self.skus[sku_name], quantity=q3(qty),
+                            unit_cost=q2(cost / qty),
+                        )
+                self._receive_po(po, day)
+                ait = q2(Decimal(str(inv['ait'])))
+                if ait:
+                    JournalEntry.create_posted(
+                        source=JournalEntry.SOURCE_PURCHASE, date=day, reference=po.po_number,
+                        narration=f"Advance income tax on PTC invoice {inv['invoice']}", created_by=self.owner,
+                        lines=[{'account': ChartOfAccount.ADVANCE_TAX_FBR, 'debit': ait},
+                               {'account': ChartOfAccount.ACCOUNTS_PAYABLE, 'credit': ait, 'party': ptc}],
                     )
-            po.submit()
-            po.receive(self.owner)
-            when = aware(week_start, 8)
-            StockLedgerEntry.objects.filter(reference=po.po_number).update(created_at=when)
-            JournalEntry.objects.filter(reference=po.po_number).update(date=week_start)
-            PurchaseOrder.objects.filter(pk=po.pk).update(received_at=when)
-            self.pos.append(po)
-            week_start = week_end + datetime.timedelta(days=1)
-            n += 1
+                self.po_ait[po.po_number] = ait
+                self.pos.append(po)
+        else:
+            # Weekly PTC lifting, sized to BIZOM (company) volume, until real invoices are shared.
+            self.log('Seeding weekly PTC purchase orders...')
+            by_sku_days = defaultdict(list)
+            for (sku_name, day), m in bizom_by_sku_day.items():
+                by_sku_days[sku_name].append((day, m))
+            week_start = self.month_start
+            n = 1
+            while week_start <= self.month_end:
+                week_end = min(week_start + datetime.timedelta(days=6), self.month_end)
+                po = PurchaseOrder.objects.create(
+                    po_number=f'PO-{week_start.year}-{n:05d}', ptc_reference_number=f'PTC-SEEDED-{n:03d}',
+                    warehouse=self.hq, supplier=ptc, order_date=week_start, created_by=self.owner,
+                    notes='Seeded: weekly lifting sized to BIZOM volume',
+                )
+                for sku_name, sku in self.skus.items():
+                    qty = sum((m for d, m in by_sku_days.get(sku_name, ())
+                               if week_start <= d <= week_end), D0)
+                    if qty > 0:
+                        PurchaseOrderLine.objects.create(
+                            purchase_order=po, sku=sku, quantity=q3(qty), unit_cost=sku.current_cost_price,
+                        )
+                self._receive_po(po, week_start)
+                self.pos.append(po)
+                week_start = week_end + datetime.timedelta(days=1)
+                n += 1
 
         # Move what BIZOM invoiced but DRs didn't physically sell (Madam
         # Banam) into its own godown, as the warehouse manager asked.
@@ -516,6 +575,36 @@ class BundleLoader:
             if minimum > 0:
                 SafetyStockLevel.objects.create(warehouse=self.hq, sku=sku, minimum_quantity=minimum)
 
+    def _receive_po(self, po, day):
+        po.submit()
+        po.receive(self.owner)
+        when = aware(day, 8)
+        StockLedgerEntry.objects.filter(reference=po.po_number).update(created_at=when)
+        JournalEntry.objects.filter(reference=po.po_number).update(date=day)
+        PurchaseOrder.objects.filter(pk=po.pk).update(received_at=when)
+
+    def _invoice_lines(self, month_bizom):
+        """
+        PTC invoices give a total quantity and value only. Split each across SKUs
+        by the month's BIZOM volume (PTC primaries track secondaries): small
+        invoices (under 500 M) are Velo, the rest cigarettes. Value is split in
+        proportion to each SKU's PTC rate. Returns [(invoice, [(sku, M, cost)])].
+        """
+        out = []
+        for inv in self.b.get('ptc_invoices') or []:
+            category = SKU.CATEGORY_NC if inv['quantity'] < 500 else SKU.CATEGORY_FMC
+            mix = {name: m for name, m in month_bizom.items()
+                   if m > 0 and self.skus[name].category == category}
+            total_m = sum(mix.values(), D0)
+            if not total_m:
+                continue
+            qty = Decimal(str(inv['quantity']))
+            shares = [(name, q3(qty * m / total_m)) for name, m in mix.items()]
+            weight = sum((q * self.skus[n].current_cost_price for n, q in shares), D0)
+            cost = Decimal(str(inv['cost']))
+            out.append((inv, [(n, q, cost * q * self.skus[n].current_cost_price / weight) for n, q in shares]))
+        return out
+
     # -- accounting ------------------------------------------------------------------
 
     def _accounting(self):
@@ -533,10 +622,10 @@ class BundleLoader:
             created_by=self.owner,
         )
         for po in self.pos:
-            value = q2(po.total_value)
+            value = q2(po.total_value) + self.po_ait.get(po.po_number, D0)
             JournalEntry.create_posted(
                 source=JournalEntry.SOURCE_VOUCHER, date=po.order_date, reference=po.po_number,
-                narration=f'Payment to PTC against {po.po_number} (seeded)',
+                narration=f'Payment to PTC against {po.po_number} (seeded: same day, from bank)',
                 lines=[
                     {'account': ChartOfAccount.ACCOUNTS_PAYABLE, 'debit': value, 'party': self.ptc},
                     {'account': ChartOfAccount.BANK, 'credit': value},

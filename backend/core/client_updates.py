@@ -260,12 +260,12 @@ class UpdateApplier:
         drs = {}
         for user in User.objects.filter(groups__name='Distribution Representative').select_related('profile'):
             drs.setdefault(norm(user.first_name), user)
-            drs[norm(user.profile.dr_code)] = user
+            drs[user.profile.dr_code.lower()] = user
         matched, unmatched, skipped_inactive = [], [], []
         for row in targets['rows']:
             if row['target_m'] is None:
                 continue
-            user = drs.get(norm(aliases.get(norm(row['name']), ''))) or drs.get(norm(row['name']))
+            user = drs.get(aliases.get(norm(row['name']), '').lower()) or drs.get(norm(row['name']))
             if user is None:
                 unmatched.append(row['name'])
                 continue
