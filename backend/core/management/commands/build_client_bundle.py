@@ -97,6 +97,9 @@ class Command(BaseCommand):
             if row['Order_Status'] != 'CL':
                 continue
             sku = row['Sku'].strip()
+            # Music Edition / loyalty packs count under their permanent variant
+            # (distributor, 25 Nov 2026), e.g. PM 10 Music -> PM 10 mg.
+            sku = manual.get('sku_merge', {}).get(sku, sku)
             m = float(row['SKU_qty_in_sticks'] or 0) / 1000
             value = float(row['Sku_Order_Value'] or 0)
             key = row['Order_ID']
@@ -296,7 +299,9 @@ class Command(BaseCommand):
             'pay_grades': manual['pay_grades'],
             'sample_settlements': manual.get('sample_settlements', []),
             'fsos': manual.get('fsos', {}),
-            'opening_stock': read_godown_opening(opts['source'], manual.get('godown_opening'), skus),
+            'opening_stock': merge_opening(
+                read_godown_opening(opts['source'], manual.get('godown_opening'), skus),
+                read_velo_opening(opts['source'], manual.get('velo_opening'))),
             'ptc_invoices': read_ptc_invoices(opts['source'], manual.get('ptc_invoices'), month),
         }
         os.makedirs(os.path.dirname(os.path.abspath(opts['out'])), exist_ok=True)
@@ -397,3 +402,32 @@ def read_ptc_invoices(source, spec, month):
             'cost': num('IN S TAX & SED'),
         })
     return out
+
+
+def read_velo_opening(source, spec):
+    """VELO ON HAND sheet: flavour name | M. Names map to BIZOM SKUs via spec['names']."""
+    if not spec:
+        return None
+    import openpyxl
+
+    ws = openpyxl.load_workbook(os.path.join(source, spec['file']), data_only=True).worksheets[0]
+    key = lambda t: re.sub(r'[^a-z0-9]', '', str(t or '').lower())  # noqa: E731 (keeps the mg)
+    names = {key(k): v for k, v in spec['names'].items()}
+    out = {}
+    for row in ws.iter_rows(values_only=True):
+        cells = [c for c in row if c is not None]
+        if len(cells) >= 2 and isinstance(cells[-1], (int, float)) and isinstance(cells[-2], str):
+            name = names.get(key(cells[-2]))
+            if name:
+                out[name] = round(float(cells[-1]), 3)
+    return {'date': spec['date'], 'stock': out}
+
+
+def merge_opening(*parts):
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    stock = {}
+    for p in parts:
+        stock.update(p['stock'])
+    return {'date': parts[0]['date'], 'stock': stock}
