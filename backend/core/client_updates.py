@@ -229,12 +229,26 @@ class UpdateApplier:
                             'pay_grade', None)
             profile.sales_channel = Channel.TYPE_VDD if grade and grade.name == 'VDD' else Channel.TYPE_DD
             profile.save(update_fields=['sales_channel'])
+        from distribution.channels import sale_channel
+        from hr.models import PayGrade
+
+        grades = {g.name: g for g in PayGrade.objects.all()}
+        changed = []
         for code, channel in self.u.get('dr_channels', {}).items():
-            UserProfile.objects.filter(dr_code=code).exclude(sales_channel=channel).update(sales_channel=channel)
-            ActualSale.objects.filter(dr__profile__dr_code=code).exclude(
-                channel_type=channel).filter(bucket='RETAIL').update(channel_type=channel)
+            if UserProfile.objects.filter(dr_code=code).exclude(sales_channel=channel).update(sales_channel=channel):
+                changed.append(code)
+            for bucket in ('RETAIL', 'SCATTERED'):
+                ActualSale.objects.filter(dr__profile__dr_code=code, bucket=bucket).exclude(
+                    channel_type=sale_channel(channel, bucket)).update(channel_type=sale_channel(channel, bucket))
+            # A DD/VDD DR is paid on that grade's salary structure from now on.
+            if channel in (Channel.TYPE_DD, Channel.TYPE_VDD) and channel in grades:
+                grade = grades[channel]
+                Employee.objects.filter(user__profile__dr_code=code).exclude(pay_grade=grade).update(
+                    pay_grade=grade, monthly_salary=grade.fixed,
+                    role=f'Distribution Representative ({grade.name})')
         n = backfill_sale_channels()
-        self.log(f'Channels: {len(self.u.get("dr_channels", {}))} DR overrides, {n} sale rows tagged')
+        self.log(f'Channels: {len(self.u.get("dr_channels", {}))} DR overrides '
+                 f'({", ".join(changed) or "none"} changed), {n} sale rows tagged')
 
     def _targets(self):
         targets = self.u.get('targets')
